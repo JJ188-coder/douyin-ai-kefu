@@ -1,7 +1,8 @@
 # 抖音来客 AI 人工接管助手 — 使用与维护
 
-> 版本：0.2.0（2026-08-18）。买家会话**转人工（allocated_service）后**由 AI 接管自动回复。
+> 版本：0.3.1（2026-08-19）。买家会话**转人工（allocated_service）后**由 AI 接管自动回复。
 > 直接调用页面 IM SDK 收发消息，**不模拟点击、不抓接口、不碰签名**。
+> v0.3.1 新增：**人工接管自动静音防抢答** + **AI 答不了的问题通过角标/桌面通知/飞书推送通知店主（popup「待人工处理」列表，可点已处理恢复）**。
 
 ## 目录结构
 
@@ -44,6 +45,7 @@ plugin/
 | `minIntervalMs` | 15000 | 同一会话两次 AI 回复的最小间隔（不足则延后发送，不丢回复） |
 | `dailyLimit` | 200 | 每日自动回复条数上限 |
 | `maxRepliesPerConv` | 1 | **回合制门禁：每条消费者新消息开启一个回合，回合内最多连回 N 条；消费者再发新消息即开启新回合（额度重置）** |
+| `staffMuteMinutes` | 15 | **人工接管静音：店主在某会话发消息 → AI 对该会话静音 N 分钟（每发一条刷新计时）；0=不静音** |
 | `quietEnabled/From/To` | 关 | 免打扰时段（跨天支持） |
 | 延迟 | 1.2–4.5s 随机 | `llm-engine.humanDelay`，营造真人节奏 |
 | 等消费者回复才回 | ✓ | 仅对「消费者新消息」消耗下一条预算；自己回复后不追发 |
@@ -53,6 +55,7 @@ plugin/
 | 发送锁+队列 | ✓ | 同一会话同时只跑一个处理流程；锁期间到的消息排队，逐条串行处理，从结构上杜绝并发连发 |
 | 输出清洗 | ✓ | 剥掉开头【…】角色标签；`**重点**` 转 “引号”，残余 markdown 符号清除，买家只见纯文本 |
 | 灵活推理 | ✓ | 知识库无直接答案时，允许基于多条知识关联+基本商业逻辑做有依据推断（如套餐含某项目→问是否收费答"已包含不另收"）；无依据绝不编造 |
+| 答不了→通知店主 | ✓ | AI 兜底话术（帮您确认/核实等）命中 → 该会话自动静音 + 图标红角标 + 桌面通知 + 飞书群推送 + popup「待人工处理」列表；点「已处理」AI 恢复该会话 |
 | 对话记录 | ✓ | 买家/AI/人工客服 往来消息（含时间/会话/角色）自动存本地（最多 3000 条）；popup「导出 JSON」下载到下载目录供复盘 |
 | 配置持久化 | ✓ | 配置存 `chrome.storage.local`，由 ISOLATED world 的 `host-bridge.js` 在启动时下发（MAIN world 无法访问 chrome.* API）；刷新/重载扩展后自动生效 |
 
@@ -67,10 +70,27 @@ plugin/
 
 已内置：openai / deepseek / moonshot(Kimi) / zhipu / qwen(通义) / volc(火山方舟) / siliconflow / openrouter 的 OpenAI 兼容 base。填 Key + 模型名即用；自定义另立 provider 在 `background.js` 里的 `PROVIDER_BASE` 加一行即可。
 
+## 飞书通知（可选）
+
+AI 答不了买家问题时，可推送提醒到飞书群。插件支持两种方式（任选其一，填到插件弹层「飞书通知」后点「发测试」验证）：
+
+**方式一：群自定义机器人 webhook（推荐，最简单）**
+在**飞书客户端**（手机/桌面，网页版不支持）打开目标群 → 群设置 → 群机器人 → 添加机器人 → 自定义机器人，创建后复制 `https://open.feishu.cn/open-apis/bot/v2/hook/…` 填入插件。安全设置建议选「自定义关键词」，填：`抖音客服`。
+
+**方式二：开放平台自建应用 API（网页端拿不到 webhook 时的备用）**
+- 需要一个已发布、已开通 `im:message` 权限、且**已被添加进目标群**的自建应用（如「您的自建应用」）。
+- 在插件「飞书通知 → 开放平台应用 API」填：App ID、App Secret、群 Chat ID（`oc_xxx`）。
+
+未配置飞书时不影响其他通知（图标角标 / 桌面通知 / popup 待处理列表仍生效）。
+
 ## 测试
 
 ```
-cd plugin/tests && node --test background-chat.test.mjs
+cd plugin/tests
+node agent-gate.test.mjs        # 门禁 17 项（历史/双推/角色/指纹/锁/人工静音/needsHuman/unmute/关闭重开）
+node --test background-chat.test.mjs   # 后台 chat 4 项
+node --test host-bridge.test.mjs       # chatlog 落盘去重 3 项
+node --test store-bridge.test.mjs      # 人工活动过滤 4 项
 ```
 逆向/联调辅助工具在 `reverse/cdp/`（capture / eval / probe / shot / inject-code），只读参考，不宜改动。
 

@@ -1,12 +1,15 @@
 {
   "manifest_version": 3,
   "name": "抖音来客 AI 人工接管助手",
-  "version": "0.2.0",
-  "description": "买家会话转人工(allocated_service)后由 AI 接管自动回复；直接调用页面 IM SDK，不模拟点击、不抓接口",
-  "permissions": ["storage", "downloads"],
-  "host_permissions": ["https://*.douyin.com/*"],
+  "version": "0.3.1",
+  "description": "买家会话转人工(allocated_service)后由 AI 接管自动回复；人工接管自动静音防抢答；答不了的问题通过角标/桌面通知/飞书通知店主",
+  "permissions": ["storage", "downloads", "notifications"],
+  "host_permissions": ["https://*.douyin.com/*", "https://open.feishu.cn/*"],
   "background": {
     "service_worker": "background.js"
+  },
+  "icons": {
+    "128": "icons/icon128.png"
   },
   "content_scripts": [
     {
@@ -23,6 +26,7 @@
     }
   ],
   "action": {
-    "default_popup": "popup/popup.html"
+    "default_popup": "popup/popup.html",
+    "default_icon": "icons/icon128.png"
   }
 }

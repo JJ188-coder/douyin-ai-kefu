@@ -77,23 +77,51 @@ async function updateBadge() {
   await chrome.action.setBadgeText({ text: n ? String(n) : '' });
 }
 
-// ---- 飞书自定义机器人 webhook（群机器人，安全设置建议"自定义关键词：抖音客服"）----
+// ---- 飞书通知：支持「群自定义机器人 webhook」或「开放平台自建应用 API」两种方式 ----
+// webhook：在飞书客户端「群设置 → 群机器人 → 自定义机器人」创建，拿 https://open.feishu.cn/open-apis/bot/v2/hook/…
+// API：用「您的自建应用」这类自建应用（app_id+app_secret）以机器人身份发到群 chat_id
 async function feishuSend(text) {
-  const c = await chrome.storage.local.get('feishuWebhook');
-  const url = (c.feishuWebhook || '').trim();
-  if (!url) return { ok: false, error: '未配置飞书 webhook' };
-  try {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ msg_type: 'text', content: { text } }),
-    });
-    const j = await resp.json().catch(() => ({}));
-    if (j.code === 0 || j.StatusCode === 0) return { ok: true };
-    return { ok: false, error: j.msg || j.message || ('HTTP ' + resp.status) };
-  } catch (e) {
-    return { ok: false, error: '飞书请求失败: ' + e.message };
+  const c = await chrome.storage.local.get(['feishuWebhook', 'feishuAppId', 'feishuAppSecret', 'feishuChatId']);
+  const webhook = (c.feishuWebhook || '').trim();
+  if (webhook) {
+    try {
+      const resp = await fetch(webhook, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ msg_type: 'text', content: { text } }),
+      });
+      const j = await resp.json().catch(() => ({}));
+      if (j.code === 0 || j.StatusCode === 0) return { ok: true };
+      return { ok: false, error: j.msg || j.message || ('HTTP ' + resp.status) };
+    } catch (e) {
+      return { ok: false, error: '飞书请求失败: ' + e.message };
+    }
   }
+  const appId = (c.feishuAppId || '').trim();
+  const appSecret = (c.feishuAppSecret || '').trim();
+  const chatId = (c.feishuChatId || '').trim();
+  if (appId && appSecret && chatId) {
+    try {
+      const tr = await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
+      });
+      const tj = await tr.json();
+      if (tj.code !== 0 || !tj.tenant_access_token) return { ok: false, error: '飞书 token 失败: ' + (tj.msg || ('code ' + tj.code)) };
+      const resp = await fetch('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=chat_id', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + tj.tenant_access_token },
+        body: JSON.stringify({ receive_id: chatId, msg_type: 'text', content: JSON.stringify({ text }) }),
+      });
+      const j = await resp.json();
+      if (j.code === 0) return { ok: true };
+      return { ok: false, error: '飞书发送失败: ' + (j.msg || ('code ' + j.code)) };
+    } catch (e) {
+      return { ok: false, error: '飞书请求失败: ' + e.message };
+    }
+  }
+  return { ok: false, error: '未配置飞书通知（webhook 或 API）' };
 }
 
 async function handleNeedsHuman(p) {
@@ -209,6 +237,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case 'preview': text = 'AI建议回复：' + String(p.reply || '').slice(0, 60); break;
         case 'notice': level = p.level === 'error' ? 'error' : (p.level === 'warn' ? 'warn' : 'ok'); text = String(p.text || ''); break;
         case 'assigned': text = '新会话已转人工接管'; break;
+        case 'needs-human':
+          level = 'warn';
+          text = '需要人工：买家问「' + String(p.buyerText || '').slice(0, 40) + '」';
+          handleNeedsHuman(p);
+          break;
         case 'ready': text = '页面已连接，插件就绪'; break;
         case 'config-applied': text = p.ok ? '配置已应用' : '配置应用失败'; level = p.ok ? 'ok' : 'error'; break;
         default: text = channel;

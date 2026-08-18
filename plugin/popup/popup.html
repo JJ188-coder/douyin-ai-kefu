@@ -112,6 +112,14 @@
           <option value="3">3 条</option>
         </select>
       </label>
+      <label><span>人工接管 AI 静音</span>
+        <select id="staffMuteMinutes">
+          <option value="15">15 分钟</option>
+          <option value="30">30 分钟</option>
+          <option value="60">1 小时</option>
+          <option value="0">不静音</option>
+        </select>
+      </label>
       <label><span>每日自动回复上限</span><input type="number" id="dailyLimit" min="1" max="5000" /></label>
       <label><span>免打扰时段开</span>
         <select id="quietEnabled"><option value="false">关</option><option value="true">开</option></select>
@@ -120,6 +128,31 @@
         <label><span>开始</span><input type="number" id="quietFrom" min="0" max="23" style="width:64px" /></label>
         <label><span>结束</span><input type="number" id="quietTo" min="0" max="23" style="width:64px" /></label>
       </div>
+    </div>
+
+    <!-- 飞书通知 -->
+    <div class="card">
+      <h2 style="display:flex; justify-content:space-between; align-items:center">飞书通知
+        <span style="font-weight:400"><button id="btnFeishuTest" class="btn" style="padding:2px 10px">发测试</button></span>
+      </h2>
+      <label><span>群机器人 webhook</span><input type="password" id="feishuWebhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…" /></label>
+      <details>
+        <summary>或使用开放平台应用 API（备用方式）</summary>
+        <label><span>App ID</span><input type="text" id="feishuAppId" placeholder="cli_xxx" /></label>
+        <label><span>App Secret</span><input type="password" id="feishuAppSecret" placeholder="应用密钥（仅存本地）" /></label>
+        <label><span>群 Chat ID</span><input type="text" id="feishuChatId" placeholder="oc_xxx" /></label>
+      </details>
+      <p class="hint">任选一种即可：webhook 在飞书客户端「群设置 → 群机器人 → 自定义机器人」创建；API 方式用你的自建应用（需先把应用加进群）。AI 答不了买家问题时，插件会推送到这个群。</p>
+    </div>
+
+    <!-- 待人工处理 -->
+    <div class="card">
+      <h2 style="display:flex; justify-content:space-between; align-items:center">待人工处理
+        <span style="font-weight:400"><span id="pendingCount" style="color:var(--sub); font-size:12px"></span>
+        <button id="btnPendingClear" class="btn" style="padding:2px 8px">全部清除</button></span>
+      </h2>
+      <div id="pendingList" class="hint" style="max-height:160px; overflow:auto">（暂无）</div>
+      <p class="hint">AI 答不了、已回“帮您确认”的买家问题会列在这里，并推送飞书/桌面通知。点「已处理」后该会话 AI 恢复接管。</p>
     </div>
 
     <!-- 事件日志 -->

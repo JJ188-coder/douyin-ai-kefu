@@ -7,3 +7,4 @@ reverse/cdp/capture-*.log
 reverse/cdp/ChatGPT-On-CS/
 node_modules/
 *.log
+.playwright-mcp/

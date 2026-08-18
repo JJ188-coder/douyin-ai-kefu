@@ -73,7 +73,7 @@
       if (c.dailyLimit !== undefined) state.dailyLimit = Number(c.dailyLimit) || 200;
       if (c.minIntervalMs !== undefined) state.minIntervalMs = Number(c.minIntervalMs) || 15000;
       if (c.maxRepliesPerConv !== undefined) state.maxRepliesPerConv = Number(c.maxRepliesPerConv) || DEFAULT_PER_TURN;
-      if (c.staffMuteMinutes !== undefined) state.staffMuteMinutes = Number(c.staffMuteMinutes) || 15;
+      if (c.staffMuteMinutes !== undefined) { const n = Number(c.staffMuteMinutes); state.staffMuteMinutes = Number.isFinite(n) ? n : 15; } // 允许 0 = 不静音
       if (c.kb) state.kb = c.kb;
     }
     return state;
@@ -93,12 +93,16 @@
   // 你每发一条刷新计时，你一直聊 AI 一直闭嘴；超时无人工活动后 AI 自动回来兜底。
   function muteConv(conv, minutes, reason) {
     if (!conv) return;
-    const mins = minutes || state.staffMuteMinutes || 15;
+    let mins = minutes;
+    if (mins === undefined || mins === null) mins = state.staffMuteMinutes;
+    if (mins === undefined || mins === null) mins = 15;
+    if (!(mins > 0)) { state.staffMuteByConv.delete(conv); return; }   // 0 = 不静音
     const wasMuted = (state.staffMuteByConv.get(conv) || 0) > Date.now();
-    state.staffMuteByConv.set(conv, Date.now() + mins * 60000);
+    state.staffMuteByConv.set(conv, mins === Infinity ? Infinity : Date.now() + mins * 60000);
     if (!wasMuted) {
       const { b } = deps();
-      b.emit('notice', { level: 'ok', text: `${reason || '检测到人工接待'}，本会话 AI 静音 ${mins} 分钟` });
+      const label = mins === Infinity ? '直到你来处理' : `${mins} 分钟`;
+      b.emit('notice', { level: 'ok', text: `${reason || '检测到人工接待'}，本会话 AI 静音 ${label}` });
     }
     log('conv muted', mins, 'min:', conv, reason || '');
   }
@@ -110,6 +114,10 @@
   // 人工客服发消息（store-bridge onStaff 回调）→ 刷新该会话静音
   function noteStaff(item) {
     if (!item || !item.conversationId) return;
+    const { b } = deps();
+    if (item.content && b.isSent(item.content)) return;    // 自己刚发的（SDK 回推），不是人工活动
+    // 历史重推不算人工活动：重载/重连后 SDK 会重放旧消息，此时发送记录已清空，不能误判成人工接管
+    if (item.timestamp && state.bootAt && item.timestamp < state.bootAt - 3000) return;
     muteConv(item.conversationId, state.staffMuteMinutes, '检测到你正在人工接待');
   }
 
@@ -174,13 +182,9 @@
       }
     }
 
-    // 关闭会话判据：消息 type=close_conversation → 停止接管该会话
+    // 关闭会话判据：消息 type=close_conversation → 停止接管该会话（完整清理由 markClosed 统一处理）
     if (item.type === 'close_conversation' || (item.originExt && item.originExt.type === 'close_conversation')) {
-      state.assigned.delete(conv);
-      state.lastReplyAtByConv.delete(conv);
-      state.turnByConv.delete(conv);      // 会话关闭，回合配额一并清掉
-      state.seenTurnMsg.delete(conv);
-      log('conversation closed, stop take-over:', conv);
+      markClosed(item);
       return;
     }
 
@@ -277,9 +281,9 @@
       });
       if (!decision || !decision.reply) return;
 
-      // ---- 答不了 → 叫人：兜底话术命中 → 上报店主 + 本会话自动静音等人工 ----
+      // ---- 答不了 → 叫人：兜底话术命中 → 上报店主 + 本会话无限期静音等人工（你来之后从人工发消息那刻起算 15 分钟）----
       if (decision.needsHuman) {
-        muteConv(conv, state.staffMuteMinutes, 'AI 答不了，已通知你处理');
+        muteConv(conv, Infinity, 'AI 答不了，已通知你处理');
         const { b: bb0 } = deps();
         bb0.emit('needs-human', { conversationId: conv, buyerText: text, reply: decision.reply });
       }
@@ -287,8 +291,8 @@
       if (state.autoSend) {
         await new Promise((r) => setTimeout(r, decision.delay)); // 真人感延迟
         try {
+          b.rememberSent(decision.reply);                     // 先登记再发送：SDK 同步回推这条消息时才不会被误判成人工发送
           b.sendText(conv, decision.reply);                     // 不打任何平台可见标记，回复就是普通人工消息
-          b.rememberSent(decision.reply);
           state.lastReplyAtByConv.set(conv, Date.now());
           state.dailyCount += 1;
           const remain = consumeTurn(conv);                 // 用掉一条本轮配额
@@ -320,9 +324,22 @@
   function markAssigned(item) {
     if (!item || !item.conversationId) return;
     state.assigned.set(item.conversationId, { assigned: true });
+    state.staffMuteByConv.delete(item.conversationId);   // 新的一局：上一局残留的静音不遗传
     log('conversation assigned -> take over:', item.conversationId);
     const { b } = deps();
     b.emit('assigned', { conversationId: item.conversationId });
+  }
+
+  // ---- 会话关闭 → 清理该会话全部状态（含人工静音：关闭后重开不受上一局静音影响）----
+  function markClosed(item) {
+    const conv = item && item.conversationId;
+    if (!conv) return;
+    state.assigned.delete(conv);
+    state.staffMuteByConv.delete(conv);
+    state.lastReplyAtByConv.delete(conv);
+    state.turnByConv.delete(conv);
+    state.seenTurnMsg.delete(conv);
+    log('conversation closed, reset conv state:', conv);
   }
 
   // ---- 开关 ----
@@ -336,6 +353,7 @@
       onMessage: (item) => { handleMessage(item).catch((e) => log('handleMessage err', e)); },
       onAssign: markAssigned,
       onStaff: noteStaff,   // 人工发消息 → 该会话静音防抢答
+      onClose: markClosed,  // 会话关闭 → 清理状态（含静音），重开后是新的一局
     });
     log('enabled; autoSend=', state.autoSend, 'provider=', state.provider);
     return state;
@@ -350,7 +368,7 @@
   function resetDaily() { state.dailyCount = 0; }
 
   const api = {
-    enable, disable, handleMessage, markAssigned, historyOf,
+    enable, disable, handleMessage, markAssigned, markClosed, historyOf,
     applyConfig, getState: () => state, resetDaily,
     getTurn, consumeTurn, noteStaff, muteConv, isMuted,
     unmuteConv: (conv) => { state.staffMuteByConv.delete(conv); log('conv unmuted:', conv); },

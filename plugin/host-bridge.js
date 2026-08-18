@@ -35,7 +35,16 @@
         const batch = chatQueue.splice(0, 25);
         const r = await chrome.storage.local.get('chatlog');
         const arr = Array.isArray(r.chatlog) ? r.chatlog : [];
-        arr.push(...batch);
+        // 去重：刷新页面时 backfill 会把同样的历史消息再推一遍，按 时间|会话|角色|内容 判重，只落新条目
+        const seen = new Set(arr.map((x) => x.t + '|' + x.conv + '|' + x.who + '|' + x.text));
+        const fresh = batch.filter((x) => {
+          const k = x.t + '|' + x.conv + '|' + x.who + '|' + x.text;
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
+        if (!fresh.length) continue;
+        arr.push(...fresh);
         await chrome.storage.local.set({ chatlog: arr.slice(-3000) });
       }
     } catch (e) {

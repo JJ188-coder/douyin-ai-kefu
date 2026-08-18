@@ -19,7 +19,8 @@
   async function load() {
     const c = await chrome.storage.local.get([
       'provider','model','apiKey','temperature','autoSend','acceptPreview',
-      'profile','kb','minIntervalMs','maxRepliesPerConv','dailyLimit','quietEnabled','quietFrom','quietTo','enabled','sent','stateCache',
+      'profile','kb','minIntervalMs','maxRepliesPerConv','staffMuteMinutes','dailyLimit','quietEnabled','quietFrom','quietTo','enabled','sent','stateCache',
+      'feishuWebhook','feishuAppId','feishuAppSecret','feishuChatId',
     ]);
     const set = (id, v) => { const el = $(id); if (el && v !== undefined) el.value = String(v); };
     set('provider', c.provider || 'deepseek');
@@ -31,10 +32,18 @@
     set('kb', (c.kb && c.kb.join('\n')) || '');
     set('minInterval', c.minIntervalMs || '15000');
     set('maxPerTurn', c.maxRepliesPerConv ?? 1);
+    set('staffMuteMinutes', c.staffMuteMinutes ?? 15);
     set('dailyLimit', c.dailyLimit || 200);
     set('quietEnabled', c.quietEnabled === true ? 'true' : 'false');
     set('quietFrom', c.quietFrom ?? 0);
     set('quietTo', c.quietTo ?? 0);
+    set('feishuWebhook', c.feishuWebhook || '');
+    set('feishuAppId', c.feishuAppId || '');
+    set('feishuAppSecret', c.feishuAppSecret || '');
+    set('feishuChatId', c.feishuChatId || '');
+
+    // 待人工处理列表 + 角标提示
+    refreshPending();
 
     // 回显最近的历史事件日志（持久化在 storage.events，popup 重开不丢）
     const ev = await chrome.storage.local.get('events');
@@ -68,20 +77,25 @@
       kb: ($('kb').value || '').split('\n').map((s) => s.trim()).filter(Boolean),
       minIntervalMs: Number($('minInterval').value) || 15000,
       maxRepliesPerConv: Number($('maxPerTurn').value) || 1,
+      staffMuteMinutes: Number($('staffMuteMinutes').value) || 15,
       dailyLimit: Number($('dailyLimit').value) || 200,
       quietEnabled: $('quietEnabled').value === 'true',
       quietFrom: Number($('quietFrom').value) || 0,
       quietTo: Number($('quietTo').value) || 0,
+      feishuWebhook: ($('feishuWebhook').value || '').trim(),
+      feishuAppId: ($('feishuAppId').value || '').trim(),
+      feishuAppSecret: ($('feishuAppSecret').value || '').trim(),
+      feishuChatId: ($('feishuChatId').value || '').trim(),
     };
-    // 把配置写 storage，并通知 content 应用
+    // 写 storage + 真正下发到客服台页面（经 background 中继，popup 自己的 window.postMessage 到不了页面）
     await chrome.storage.local.set(cfg);
-    dispatch('apply-config', cfg);
+    chrome.runtime.sendMessage({ type: 'aics-cmd', cmd: 'apply-config', payload: cfg }, () => void chrome.runtime.lastError);
     toast('已保存并下发');
   }
 
-  // ---- 给页面下发命令（经 ISOLATED bridge 转发到 MAIN）----
+  // ---- 给页面下发命令（经 background 中继到 ISOLATED bridge → MAIN）----
   function dispatch(cmd, payload = {}) {
-    window.postMessage({ __aics: 'cmd', cmd, payload }, window.location.origin);
+    chrome.runtime.sendMessage({ type: 'aics-cmd', cmd, payload }, () => void chrome.runtime.lastError);
   }
 
   // ---- 事件监听（后台转发的页面事件回放）----
@@ -114,6 +128,41 @@
 
   $('btnSave') && $('btnSave').addEventListener('click', save);
   $('btnRefresh').addEventListener('click', async () => { await load(); dispatch('get-state'); toast('已刷新'); });
+
+  // ---- 待人工处理列表 ----
+  async function refreshPending() {
+    chrome.runtime.sendMessage({ type: 'pending-list' }, (res) => {
+      const list = (res && res.list) || [];
+      const active = list.filter((x) => !x.done);
+      const el = $('pendingCount');
+      if (el) el.textContent = active.length ? '待处理 ' + active.length + ' 条' : '';
+      const box = $('pendingList');
+      if (!box) return;
+      if (!active.length) { box.innerHTML = '（暂无待处理）'; return; }
+      box.innerHTML = active.slice(-20).reverse().map((it) => {
+        const t = new Date(it.t).toLocaleString('zh-CN', { hour12: false });
+        return `<div style="border-bottom:1px dashed var(--line); padding:5px 0">
+          <div style="color:var(--sub); font-size:11px">${t} · 会话 ${String(it.conv||'').slice(-12)}</div>
+          <div>买家：${esc(it.buyer)}</div>
+          <div style="color:var(--sub)">AI 已回：${esc(it.reply)}</div>
+          <button class="btn" data-pid="${it.id}" data-conv="${it.conv}" style="padding:2px 8px; margin-top:4px">已处理</button>
+        </div>`;
+      }).join('');
+      box.querySelectorAll('button[data-pid]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          chrome.runtime.sendMessage({ type: 'pending-done', payload: { id: btn.dataset.pid, conversationId: btn.dataset.conv } }, () => refreshPending());
+        });
+      });
+    });
+  }
+  function esc(s) { return String(s || '').replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+  $('btnPendingClear').addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'pending-clear' }, () => { refreshPending(); toast('待处理已清空'); });
+  });
+  $('btnFeishuTest').addEventListener('click', () => {
+    chrome.runtime.sendMessage({ type: 'feishu-test' }, (res) => toast(res && res.ok ? '飞书测试消息已发送 ✅' : ('飞书发送失败：' + ((res && res.error) || '未配置 webhook'))));
+  });
+
   $('btnTest').addEventListener('click', () => {
     dispatch('send-test', { conversationId: '', text: '联调：在吗？周末还有房吗？' });
     toast('已发送测试消息（走接管管线）');
@@ -156,4 +205,8 @@
   document.querySelectorAll('input,select,textarea').forEach((el) => el.addEventListener('change', save));
 
   window.addEventListener('load', () => { load(); dispatch('get-state'); });
+  // 收到「需要人工」事件时刷新待处理列表
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.type === 'aics-event' && (msg.channel === 'needs-human')) refreshPending();
+  });
 })();

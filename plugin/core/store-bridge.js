@@ -154,7 +154,12 @@
     const cs = getChatStore();
     if (!cs || !cs._imSdkStore) return null;
     const sdk = cs._imSdkStore;
-    const { onMessage, onAssign, onStaff } = opts;
+    const { onMessage, onAssign, onStaff, onClose } = opts;
+    const listenAt = Date.now();   // 开始监听时刻：早于它的 isFromMe 消息都是历史重推，不算人工活动
+    // 平台系统提示/自动欢迎语不是人工打字（方括号系统提示 + 欢迎语/转接模板）
+    const SYS_STAFF_RE = /^\[.+\]$|很高兴为您服务|已为您转接|服务已结束|已结束服务/;
+    // 会话关闭信号：事件型 close_conversation 或「[xx关闭会话]」系统提示（isFromMe=true 也要捕获）
+    const CLOSE_RE = /^\[.*关闭会话.*\]$|^会话已关闭$/;
 
     const onMsg = (msg) => {
       try {
@@ -176,11 +181,20 @@
           emit('conversation-assigned', item);
           if (typeof onAssign === 'function') onAssign(item); // 直接回调 -> 立即标记接管
         }
+        // 会话关闭（事件型或「[xx关闭会话]」系统提示，isFromMe=true 也走这里）→ 通知 agent 清理该会话状态
+        if (item.type === 'close_conversation' || ext.type === 'close_conversation' || CLOSE_RE.test(String(msg.content || '').trim())) {
+          emit('conversation-closed', item);
+          if (typeof onClose === 'function') onClose(item);
+          return;
+        }
         if (!msg.isFromMe) {
           emit('message', item);
           if (typeof onMessage === 'function') onMessage(item);
         } else if (String(msg.content || '').trim() && !isSent(msg.content)) {
           // 人工客服本人在发消息（排除 AI 自己发的）→ 派发人工活动，agent 据此静音防抢答
+          const ts = msg.createTime || 0;
+          if (ts && ts < listenAt - 3000) return;                 // 历史重推（重载/重连后 SDK 重放）不算人工活动
+          if (SYS_STAFF_RE.test(String(msg.content).trim())) return; // 系统提示/自动欢迎语不算人工打字
           emit('staff-activity', item);
           if (typeof onStaff === 'function') onStaff(item);
         }
