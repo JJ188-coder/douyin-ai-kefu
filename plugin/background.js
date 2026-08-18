@@ -1,0 +1,226 @@
+// background.js — MV3 service worker
+// 职责：
+//   1) （推荐路径）在后台做 LLM fetch(OpenAI 兼容) — 用 host_permissions 绕过页面 CORS，
+//     且 API key 只存在于 service worker / chrome.storage，不注入页面。
+//   2) 中转 MAIN world ⇄ ISOLATED(popup/存储) 的消息。
+self.chrome = self.chrome || chrome;
+
+const PROVIDER_BASE = {
+  openai: 'https://api.openai.com/v1',
+  deepseek: 'https://api.deepseek.com/v1',
+  moonshot: 'https://api.moonshot.cn/v1',
+  zhipu: 'https://open.bigmodel.cn/api/paas/v4',
+  qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  volc: 'https://ark.cn-beijing.volces.com/api/v3',
+  siliconflow: 'https://api.siliconflow.cn/v1',
+  openrouter: 'https://openrouter.ai/api/v1',
+};
+
+async function cfg() {
+  const c = await chrome.storage.local.get(['apiKey', 'apiBase', 'provider', 'model', 'temperature']);
+  return {
+    apiKey: c.apiKey || '',
+    apiBase: c.apiBase || PROVIDER_BASE[c.provider] || PROVIDER_BASE.deepseek,
+    provider: c.provider || 'deepseek',
+    model: c.model || (c.provider === 'deepseek' ? 'deepseek-chat' : c.provider === 'moonshot' ? 'moonshot-v1-8k' : 'deepseek-chat'),
+    temperature: c.temperature ?? 0.9,
+  };
+}
+
+// ---- LLM chat（OpenAI 兼容）----
+async function chat({ model, apiKey, apiBase, temperature, messages }) {
+  const body = {
+    model,
+    temperature: Number(temperature) || 0.9,
+    messages,
+  };
+  let resp;
+  try {
+    resp = await fetch(`${apiBase}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    return { ok: false, error: '网络请求失败: ' + e.message };
+  }
+  if (!resp.ok) {
+    let detail = '';
+    try {
+      const j = await resp.json();
+      detail = j?.error?.message || JSON.stringify(j).slice(0, 300);
+    } catch (_) {
+      detail = await resp.text().catch(() => '');
+    }
+    return { ok: false, error: `HTTP ${resp.status}: ${detail}` };
+  }
+  const j = await resp.json();
+  const text = j?.choices?.[0]?.message?.content || '';
+  return { ok: true, text };
+}
+
+// ---- 命令中继：popup → 本 worker → 客服台页面的 host-bridge（ISOLATED）----
+// 解决 popup 的 window.postMessage 到不了页面的问题：配置保存/开关/解除静音即改即生效。
+function relayCmdToCsTabs(cmd, payload) {
+  chrome.tabs.query({ url: 'https://life.douyin.com/cs/web*' }, (tabs) => {
+    for (const t of tabs || []) {
+      chrome.tabs.sendMessage(t.id, { type: 'aics-cmd', cmd, payload }, () => void chrome.runtime.lastError);
+    }
+  });
+}
+
+// ---- 待人工处理：AI 答不了的买家问题，通知店主 ----
+async function updateBadge() {
+  const r = await chrome.storage.local.get('pendingHuman');
+  const n = (Array.isArray(r.pendingHuman) ? r.pendingHuman : []).filter((x) => !x.done).length;
+  await chrome.action.setBadgeBackgroundColor({ color: '#f53f3f' });
+  await chrome.action.setBadgeText({ text: n ? String(n) : '' });
+}
+
+// ---- 飞书自定义机器人 webhook（群机器人，安全设置建议"自定义关键词：抖音客服"）----
+async function feishuSend(text) {
+  const c = await chrome.storage.local.get('feishuWebhook');
+  const url = (c.feishuWebhook || '').trim();
+  if (!url) return { ok: false, error: '未配置飞书 webhook' };
+  try {
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ msg_type: 'text', content: { text } }),
+    });
+    const j = await resp.json().catch(() => ({}));
+    if (j.code === 0 || j.StatusCode === 0) return { ok: true };
+    return { ok: false, error: j.msg || j.message || ('HTTP ' + resp.status) };
+  } catch (e) {
+    return { ok: false, error: '飞书请求失败: ' + e.message };
+  }
+}
+
+async function handleNeedsHuman(p) {
+  const item = {
+    id: Date.now() + '_' + Math.random().toString(36).slice(2, 8),
+    t: Date.now(),
+    conv: String(p.conversationId || ''),
+    buyer: String(p.buyerText || '').slice(0, 200),
+    reply: String(p.reply || '').slice(0, 200),
+    done: false,
+  };
+  const r = await chrome.storage.local.get('pendingHuman');
+  const arr = Array.isArray(r.pendingHuman) ? r.pendingHuman : [];
+  arr.push(item);
+  await chrome.storage.local.set({ pendingHuman: arr.slice(-50) });
+  updateBadge();
+  // 桌面通知（macOS 需在系统设置允许 Chrome 通知；失败不影响角标/飞书）
+  try {
+    chrome.notifications.create('nh_' + item.id, {
+      type: 'basic',
+      iconUrl: 'icons/icon128.png',
+      title: '抖音客服：有买家问题需要人工处理',
+      message: '买家：' + item.buyer,
+      priority: 2,
+    });
+  } catch (e) { /* 通知不可用时静默 */ }
+  // 飞书推送
+  const time = new Date(item.t).toLocaleString('zh-CN', { hour12: false });
+  feishuSend(
+    '🔔 抖音客服·需要人工介入\n' +
+    '买家：' + item.buyer + '\n' +
+    'AI 已兜底回复：' + item.reply + '\n' +
+    '时间：' + time + '\n' +
+    '请到客服台处理（该会话已自动静音 15 分钟，你发消息即接管）'
+  ).then((res) => { if (!res.ok) console.warn('[background] 飞书推送失败:', res.error); });
+}
+
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (!msg) return;
+  switch (msg.type) {
+    case 'llm-chat': {
+      // MAIN world 经由 host-bridge → 本 worker 发起真实 LLM 请求
+      cfg().then(async (c) => {
+        if (!c.apiKey) {
+          sendResponse({ ok: false, error: '未配置 API Key，请到插件弹层填写' });
+          return;
+        }
+        const prompt = msg.payload && msg.payload.messages;
+        if (!Array.isArray(prompt)) {
+          sendResponse({ ok: false, error: 'payload.messages 缺失' });
+          return;
+        }
+        const res = await chat({ ...c, messages: prompt });
+        sendResponse(res);
+      }).catch((e) => {
+        sendResponse({ ok: false, error: '后台异常: ' + e.message });
+      });
+      return true; // 异步响应
+    }
+    case 'cfg-get': {
+      cfg().then(sendResponse);
+      return true;
+    }
+    case 'cfg-set': {
+      const patch = msg.payload || {};
+      chrome.storage.local.set(patch, () => sendResponse({ ok: true }));
+      return true;
+    }
+    case 'aics-cmd': {
+      // popup 命令中继到客服台页面（apply-config / enable / disable / unmute-conv …）
+      relayCmdToCsTabs(msg.cmd, msg.payload);
+      sendResponse({ ok: true });
+      return true;
+    }
+    case 'feishu-test': {
+      feishuSend('✅ 测试消息：抖音客服插件 ↔ 飞书 通知通道已连通。AI 答不了买家问题时会推送到这里。')
+        .then(sendResponse);
+      return true;
+    }
+    case 'pending-list': {
+      chrome.storage.local.get('pendingHuman', (r) => {
+        sendResponse({ list: Array.isArray(r.pendingHuman) ? r.pendingHuman : [] });
+      });
+      return true;
+    }
+    case 'pending-done': {
+      const id = msg.payload && msg.payload.id;
+      const conv = msg.payload && msg.payload.conversationId;
+      chrome.storage.local.get('pendingHuman', (r) => {
+        const arr = Array.isArray(r.pendingHuman) ? r.pendingHuman : [];
+        const it = arr.find((x) => x.id === id);
+        if (it) it.done = true;
+        chrome.storage.local.set({ pendingHuman: arr }, () => {
+          updateBadge();
+          if (conv) relayCmdToCsTabs('unmute-conv', { conversationId: conv }); // 你已处理 → 该会话 AI 恢复
+          sendResponse({ ok: true });
+        });
+      });
+      return true;
+    }
+    case 'pending-clear': {
+      chrome.storage.local.set({ pendingHuman: [] }, () => { updateBadge(); sendResponse({ ok: true }); });
+      return true;
+    }
+    case 'aics-event': {
+      // 事件日志持久化：popup 打开时回显最近 100 条（复盘/排查用）
+      const { channel, payload } = msg;
+      if (!channel || channel === 'chatlog') return false;   // 对话记录单独落盘，不入事件日志
+      const p = payload || {};
+      let level = 'ok', text = channel;
+      switch (channel) {
+        case 'sent': text = '已回复 ' + String(p.reply || '').slice(0, 60); break;
+        case 'preview': text = 'AI建议回复：' + String(p.reply || '').slice(0, 60); break;
+        case 'notice': level = p.level === 'error' ? 'error' : (p.level === 'warn' ? 'warn' : 'ok'); text = String(p.text || ''); break;
+        case 'assigned': text = '新会话已转人工接管'; break;
+        case 'ready': text = '页面已连接，插件就绪'; break;
+        case 'config-applied': text = p.ok ? '配置已应用' : '配置应用失败'; level = p.ok ? 'ok' : 'error'; break;
+        default: text = channel;
+      }
+      chrome.storage.local.get('events', (r) => {
+        const arr = Array.isArray(r.events) ? r.events : [];
+        arr.push({ t: Date.now(), channel, level, text });
+        chrome.storage.local.set({ events: arr.slice(-100) });
+      });
+      return false;
+    }
+    default:
+      return false;
+  }
+});

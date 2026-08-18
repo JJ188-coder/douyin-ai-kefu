@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>AI 人工接管助手</title>
+  <style>
+    :root { --bg:#f6f7f9; --card:#fff; --line:#e6e8ec; --txt:#1f2329; --sub:#646a73; --acc:#1668dc; --ok:#00b42a; --warn:#ff7d00; --err:#f53f3f; }
+    * { box-sizing:border-box; }
+    body { margin:0; font:13px/1.5 -apple-system,"PingFang SC",sans-serif; background:var(--bg); color:var(--txt); width:360px; }
+    header { display:flex; align-items:center; justify-content:space-between; padding:12px 14px; background:#fff; border-bottom:1px solid var(--line); }
+    header h1 { font-size:15px; margin:0; }
+    .switch { position:relative; width:44px; height:24px; }
+    .switch input { opacity:0; width:0; height:0; }
+    .slider { position:absolute; inset:0; background:#c8ccd4; border-radius:24px; transition:.2s; }
+    .slider::before { content:""; position:absolute; width:18px; height:18px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.2s; }
+    .switch input:checked + .slider { background:var(--acc); }
+    .switch input:checked + .slider::before { transform:translateX(20px); }
+    main { padding:12px 14px 16px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:10px; }
+    .card h2 { font-size:13px; margin:0 0 8px; }
+    label { display:flex; justify-content:space-between; gap:10px; margin:6px 0; }
+    label span { color:var(--sub); min-width:88px; }
+    input[type=text], input[type=password], input[type=number], select, textarea { flex:1; border:1px solid var(--line); border-radius:6px; padding:5px 7px; font:inherit; background:#fff; }
+    textarea { resize:vertical; min-height:52px; }
+    .row { display:flex; gap:8px; align-items:center; }
+    .btn { border:1px solid var(--line); background:#fff; color:var(--txt); border-radius:6px; padding:6px 12px; cursor:pointer; }
+    .btn.primary { background:var(--acc); color:#fff; border-color:var(--acc); }
+    .btn.danger { color:var(--err); }
+    .btn:disabled { opacity:.5; cursor:not-allowed; }
+    .badge { font-size:11px; padding:1px 7px; border-radius:10px; }
+    .badge.ok { background:#e8ffea; color:var(--ok); }
+    .badge.warn { background:#fff3e0; color:var(--warn); }
+    .badge.off { background:#f1f2f5; color:var(--sub); }
+    .logs { background:#0f1420; color:#aef3b0; border-radius:8px; padding:8px; max-height:140px; overflow:auto; font:11px/1.6 ui-monospace,Menlo,monospace; }
+    .logs .err { color:#ff9d9d; }
+    .hint { color:var(--sub); font-size:11px; margin:4px 0; }
+    .statusline { display:flex; gap:6px; align-items:center; margin:8px 0; }
+    details summary { cursor:pointer; color:var(--sub); font-size:12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>抖音来客 · AI 人工接管</h1>
+    <label class="switch">
+      <input type="checkbox" id="masterToggle" />
+      <span class="slider"></span>
+    </label>
+  </header>
+
+  <main>
+    <!-- 状态 / 事件 -->
+    <div class="card">
+      <div class="statusline">
+        <span id="stateText">—</span>
+        <span id="storeBadge" class="badge off">页面未连接</span>
+      </div>
+      <div class="row" style="flex-wrap:wrap; gap:6px">
+        <button id="btnTest" class="btn">测试一次接管</button>
+        <button id="btnRefresh" class="btn">刷新状态</button>
+      </div>
+      <div class="hint" id="testHint"></div>
+    </div>
+
+    <!-- 模型配置 -->
+    <div class="card">
+      <h2>模型</h2>
+      <label><span>供应商</span>
+        <select id="provider">
+          <option value="deepseek">DeepSeek（推荐）</option>
+          <option value="openai">OpenAI</option>
+          <option value="moonshot">Kimi(月之暗面)</option>
+          <option value="zhipu">智谱 GLM</option>
+          <option value="qwen">通义千问</option>
+          <option value="volc">火山方舟</option>
+          <option value="siliconflow">硅基流动</option>
+          <option value="openrouter">OpenRouter</option>
+          <option value="placeholder">占位(不真发)</option>
+        </select>
+      </label>
+      <label><span>模型名</span><input type="text" id="model" placeholder="deepseek-chat / gpt-4o-mini …" /></label>
+      <label><span>API Key</span><input type="password" id="apiKey" placeholder="sk-…" /></label>
+      <label><span>温度</span><input type="number" id="temperature" min="0" max="2" step="0.1" /></label>
+      <label><span>自动发送</span>
+        <select id="autoSend"><option value="false">否（仅预览）</option><option value="true">是（AI 直接回复）</option></select>
+      </label>
+      <p class="hint">Key 仅存于插件本地(chrome.storage)，只在后台 service worker 使用，不注入页面。</p>
+    </div>
+
+    <!-- 人设 / 话术 -->
+    <div class="card">
+      <h2>人设 / 知识库</h2>
+      <label><span>人设语气</span><textarea id="profile" placeholder="口语化、像真人…"></textarea></label>
+      <label style="display:block"><span>自定义知识库（每行一条“问：… 答：…”）</span>
+        <textarea id="kb" style="width:100%" placeholder="问：…？ 答：…"></textarea>
+      </label>
+    </div>
+
+    <!-- 真人化策略 -->
+    <div class="card">
+      <h2>真人化策略</h2>
+      <label><span>最小回复间隔</span>
+        <select id="minInterval">
+          <option value="15000">≥15 秒</option>
+          <option value="30000">≥30 秒</option>
+          <option value="60000">≥1 分钟</option>
+        </select>
+      </label>
+      <label><span>每条买家消息最多回</span>
+        <select id="maxPerTurn">
+          <option value="1">1 条（一问一答）</option>
+          <option value="2">2 条</option>
+          <option value="3">3 条</option>
+        </select>
+      </label>
+      <label><span>每日自动回复上限</span><input type="number" id="dailyLimit" min="1" max="5000" /></label>
+      <label><span>免打扰时段开</span>
+        <select id="quietEnabled"><option value="false">关</option><option value="true">开</option></select>
+      </label>
+      <div class="row">
+        <label><span>开始</span><input type="number" id="quietFrom" min="0" max="23" style="width:64px" /></label>
+        <label><span>结束</span><input type="number" id="quietTo" min="0" max="23" style="width:64px" /></label>
+      </div>
+    </div>
+
+    <!-- 事件日志 -->
+    <div class="card">
+      <h2 style="display:flex; justify-content:space-between">事件日志
+        <span style="font-weight:400"><button id="btnClearLog" class="btn" style="padding:2px 8px">清空</button></span>
+      </h2>
+      <div class="logs" id="logs">（等待事件…）</div>
+    </div>
+
+    <!-- 对话记录（本地复盘） -->
+    <div class="card">
+      <h2 style="display:flex; justify-content:space-between; align-items:center">对话记录
+        <span style="font-weight:400"><span id="chatCount" style="color:var(--sub); font-size:12px"></span>
+        <button id="btnExportChat" class="btn" style="padding:2px 10px">导出 JSON</button></span>
+      </h2>
+      <p style="margin:0; color:var(--sub); font-size:12px; line-height:1.6">插件与买家之间的往来消息自动记录在本地（买家/AI/人工客服 区分，最多保留最近 3000 条）。点「导出 JSON」下载到下载目录，可用于复盘分析。</p>
+    </div>
+
+    <details>
+      <summary>其他</summary>
+      <p>
+        <button id="btnResetDaily" class="btn danger">重置今日计数</button>
+      </p>
+    </details>
+  </main>
+
+  <script src="popup.js"></script>
+</body>
+</html>

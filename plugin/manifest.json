@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "抖音来客 AI 人工接管助手",
+  "version": "0.2.0",
+  "description": "买家会话转人工(allocated_service)后由 AI 接管自动回复；直接调用页面 IM SDK，不模拟点击、不抓接口",
+  "permissions": ["storage", "downloads"],
+  "host_permissions": ["https://*.douyin.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://life.douyin.com/cs/web*"],
+      "js": ["core/store-bridge.js", "core/llm-engine.js", "core/knowledge.js", "core/agent.js", "core/host.js", "content.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://life.douyin.com/cs/web*"],
+      "js": ["host-bridge.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ],
+  "action": {
+    "default_popup": "popup/popup.html"
+  }
+}

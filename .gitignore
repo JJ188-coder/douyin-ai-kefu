@@ -1,0 +1,9 @@
+# 本地逆向/抓包产物不进版本库
+reverse/bundles/
+reverse/chrome-profile/
+reverse/chrome-profile-plug/
+reverse/shots/
+reverse/cdp/capture-*.log
+reverse/cdp/ChatGPT-On-CS/
+node_modules/
+*.log
