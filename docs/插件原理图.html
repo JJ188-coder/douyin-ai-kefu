@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>抖音客服 AI 插件 · 工作原理一张图</title>
+<style>
+  :root {
+    --ink: #1c1a17;
+    --paper: #faf8f4;
+    --buyer: #2f6fed;
+    --server: #8a8f98;
+    --plugin: #0f9d6c;
+    --llm: #7c5cbf;
+    --owner: #e0691f;
+    --line: #e3ded4;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--paper);
+    color: var(--ink);
+    line-height: 1.7;
+    padding: 48px 20px 80px;
+  }
+  .wrap { max-width: 980px; margin: 0 auto; }
+
+  header { text-align: center; margin-bottom: 14px; }
+  header .tag {
+    display: inline-block; font-size: 13px; letter-spacing: 2px;
+    color: var(--plugin); border: 1px solid var(--plugin);
+    border-radius: 999px; padding: 3px 14px; margin-bottom: 16px;
+  }
+  h1 { font-size: 30px; font-weight: 700; letter-spacing: 1px; }
+  .subtitle { color: #6b655c; margin-top: 10px; font-size: 15px; }
+  .oneline {
+    margin: 26px auto 0; max-width: 760px;
+    background: #fff; border: 1px solid var(--line); border-radius: 14px;
+    padding: 18px 26px; font-size: 17px; text-align: center;
+    box-shadow: 0 2px 10px rgba(60,50,30,.05);
+  }
+  .oneline b { color: var(--plugin); }
+
+  section { margin-top: 54px; }
+  h2 {
+    font-size: 21px; margin-bottom: 6px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  h2 .no {
+    width: 30px; height: 30px; border-radius: 50%;
+    background: var(--ink); color: #fff; font-size: 15px;
+    display: inline-flex; align-items: center; justify-content: center; flex: none;
+  }
+  .hint { color: #8a847a; font-size: 14px; margin-bottom: 20px; }
+
+  /* ---------- 泳道图 ---------- */
+  .lanes {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1.35fr 1fr 1fr;
+    gap: 0 10px;
+  }
+  .lane-head {
+    text-align: center; font-weight: 700; font-size: 15px;
+    padding: 12px 6px; border-radius: 12px 12px 0 0;
+    color: #fff;
+  }
+  .lane-body {
+    border: 1px solid var(--line); border-top: none;
+    border-radius: 0 0 12px 12px; background: #fff;
+    min-height: 30px; padding: 10px 8px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .lh-buyer { background: var(--buyer); }
+  .lh-server { background: var(--server); }
+  .lh-plugin { background: var(--plugin); }
+  .lh-llm { background: var(--llm); }
+  .lh-owner { background: var(--owner); }
+  .lane-sub { font-size: 12px; font-weight: 400; opacity: .85; display: block; margin-top: 2px; }
+
+  .ball {
+    border-radius: 10px; padding: 9px 10px; font-size: 13px; line-height: 1.5;
+    border: 1px solid var(--line); background: #fbfaf7;
+    position: relative;
+  }
+  .ball .step {
+    position: absolute; top: -9px; left: -7px;
+    width: 20px; height: 20px; border-radius: 50%;
+    background: var(--ink); color: #fff;
+    font-size: 11px; display: flex; align-items: center; justify-content: center;
+    font-weight: 700;
+  }
+  .ball.green { background: #ecf8f2; border-color: #bfe6d5; }
+  .ball.purple { background: #f2edfb; border-color: #d9cdf0; }
+  .ball.orange { background: #fdf0e6; border-color: #f2cba6; }
+  .ball.blue { background: #edf3fe; border-color: #c4d7f8; }
+
+  .flow-note {
+    grid-column: 1 / -1;
+    font-size: 12.5px; color: #8a847a;
+    padding: 2px 4px 8px;
+  }
+  .arrow-row {
+    grid-column: 1 / -1;
+    display: flex; align-items: center; gap: 10px;
+    color: #6b655c; font-size: 13.5px;
+    padding: 2px 2px;
+  }
+  .arrow-row .arrow {
+    flex: none; font-weight: 700; color: var(--plugin); font-size: 15px;
+  }
+  .arrow-row .label {
+    background: #fff; border: 1px dashed #cfc8ba; border-radius: 8px;
+    padding: 5px 12px;
+  }
+
+  /* ---------- 关卡 ---------- */
+  .gates { display: flex; flex-direction: column; gap: 12px; }
+  .gate {
+    display: flex; gap: 16px; align-items: flex-start;
+    background: #fff; border: 1px solid var(--line); border-radius: 12px;
+    padding: 14px 18px;
+  }
+  .gate .gno {
+    flex: none; width: 34px; height: 34px; border-radius: 9px;
+    background: #f0ede6; color: var(--ink);
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 800; font-size: 15px;
+  }
+  .gate.red .gno { background: #fdeae2; color: #c74b12; }
+  .gate b { display: block; font-size: 15.5px; }
+  .gate p { font-size: 13.5px; color: #6b655c; }
+  .gate .pass { color: var(--plugin); font-weight: 600; }
+
+  /* ---------- 铁律卡 ---------- */
+  .rules { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .rule {
+    background: #fff; border: 1px solid var(--line); border-radius: 14px;
+    padding: 20px 18px; text-align: center;
+  }
+  .rule .icon { font-size: 26px; }
+  .rule b { display: block; margin: 10px 0 6px; font-size: 15.5px; }
+  .rule p { font-size: 13px; color: #6b655c; }
+
+  .owner-box {
+    background: #fff; border: 1.5px solid var(--owner); border-radius: 14px;
+    padding: 20px 24px;
+  }
+  .owner-box .row { display: flex; gap: 14px; align-items: flex-start; padding: 8px 0; }
+  .owner-box .row + .row { border-top: 1px dashed var(--line); }
+  .owner-box .em { font-size: 20px; flex: none; margin-top: 2px; }
+  .owner-box b { font-size: 15px; }
+  .owner-box p { font-size: 13.5px; color: #6b655c; }
+
+  footer {
+    margin-top: 60px; text-align: center; color: #a39c8f; font-size: 12.5px;
+  }
+  @media (max-width: 760px) {
+    .lanes { grid-template-columns: 1fr; }
+    .lane-body { min-height: 0; }
+    .rules { grid-template-columns: 1fr; }
+  }
+  @media print {
+    body { background: #fff; padding: 10mm; }
+    section { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="tag">工作原理 · 一张图</div>
+    <h1>抖音客服 AI 插件是怎么干活的</h1>
+    <div class="subtitle">不模拟点击、不抓接口 —— 它住在客服台网页里，直接用网页自己的发消息功能</div>
+  </header>
+
+  <div class="oneline">
+    一句话原理：插件就像一个<b>住在客服台网页里的隐形员工</b>，<br>
+    网页收到买家消息它立刻知道，回消息时直接调用网页自己的发送功能，<b>指名道姓发给某个买家</b>，所以绝不会发错人。
+  </div>
+
+  <!-- ============ 泳道图 ============ -->
+  <section>
+    <h2><span class="no">1</span>一条消息的完整旅程</h2>
+    <div class="hint">从买家打字到 AI 回复，全程 2–6 秒。五个角色，各就各位：</div>
+
+    <div class="lanes">
+      <div class="lane-head lh-buyer">🧑 买家<span class="lane-sub">抖音 App</span></div>
+      <div class="lane-head lh-server">☁️ 抖音服务器<span class="lane-sub">消息中转站</span></div>
+      <div class="lane-head lh-plugin">🖥️ 客服台网页<span class="lane-sub">插件住在这里面</span></div>
+      <div class="lane-head lh-llm">🧠 大模型<span class="lane-sub">DeepSeek，按次计费</span></div>
+      <div class="lane-head lh-owner">👤 你（店主）<span class="lane-sub">随时可以接管</span></div>
+
+      <div class="lane-body">
+        <div class="ball blue"><span class="step">1</span>买家问：「烧烤料那些提供吗」</div>
+        <div class="ball blue"><span class="step">7</span>买家收到回复，体验和人工无异</div>
+      </div>
+      <div class="lane-body">
+        <div class="ball"><span class="step">2</span>服务器把消息推给所有在线的客服台</div>
+        <div class="ball"><span class="step">6</span>回复经服务器转给买家</div>
+      </div>
+      <div class="lane-body">
+        <div class="ball green"><span class="step">3</span>插件立刻收到通知，先看「这是谁发的」——只理真人买家</div>
+        <div class="ball green"><span class="step">4</span>过五道安全检查（见下方第 2 节）</div>
+        <div class="ball green"><span class="step">5b</span>拿到答案后清洗一遍，调用网页自己的发送功能，<b>按会话编号定向发回这个买家</b></div>
+      </div>
+      <div class="lane-body">
+        <div class="ball purple"><span class="step">5a</span>插件把「最近 30 条对话 + 你的知识库 + 人设要求」打包提问，大模型给出答案</div>
+      </div>
+      <div class="lane-body">
+        <div class="ball orange">AI 答不了的问题 → 自动闭嘴 + 飞书推送叫你处理</div>
+        <div class="ball orange">你任何时候自己打字 → 插件立刻对该买家闭嘴 15 分钟</div>
+      </div>
+    </div>
+
+    <div class="arrow-row" style="margin-top:14px">
+      <span class="arrow">→</span>
+      <span class="label">关键点：回复不是「往当前打开的聊天窗口里打字」，而是<b>带着买家编号直接调发送函数</b>。10 个买家同时来，各回各的，互不干扰——这就是它不会回错人的原因。</span>
+    </div>
+  </section>
+
+  <!-- ============ 五道关卡 ============ -->
+  <section>
+    <h2><span class="no">2</span>收到买家消息的一瞬间，连过五道关卡</h2>
+    <div class="hint">任何一关不过，这条消息就不回——宁可漏回，不可乱回。漏回的会通过飞书通知你兜底。</div>
+
+    <div class="gates">
+      <div class="gate red">
+        <div class="gno">①</div>
+        <div>
+          <b>是真人买家在说话吗？</b>
+          <p>平台自带的智能客服、系统通知、你自己刚发的消息、AI 自己的回执——全部认得出来并跳过。<span class="pass">只响应真人买家。</span></p>
+        </div>
+      </div>
+      <div class="gate">
+        <div class="gno">②</div>
+        <div>
+          <b>这个会话归我管吗？</b>
+          <p>只有「转人工之后」的会话才接管。机器人阶段不插手。</p>
+        </div>
+      </div>
+      <div class="gate red">
+        <div class="gno">③</div>
+        <div>
+          <b>店主正在亲自接待吗？</b>
+          <p>只要你在某个会话里打了字，插件对那个买家<b>立刻闭嘴 15 分钟</b>，你每发一条重新计时——你永远优先。</p>
+        </div>
+      </div>
+      <div class="gate">
+        <div class="gno">④</div>
+        <div>
+          <b>这条是不是已经回过 / 回得太快？</b>
+          <p>同一条消息不会回两遍；同一会话两条回复至少隔 15 秒，模拟真人打字节奏。</p>
+        </div>
+      </div>
+      <div class="gate">
+        <div class="gno">⑤</div>
+        <div>
+          <b>大模型这次答得有依据吗？</b>
+          <p>只准按你的知识库回答，不许编造。答不了的统一说「帮您确认一下」，<b>同时飞书推送叫你</b>，绝不硬答。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 人工优先 ============ -->
+  <section>
+    <h2><span class="no">3</span>你永远是老板，插件只是值班的</h2>
+    <div class="hint">三种情况下它主动把主动权交回给你：</div>
+    <div class="owner-box">
+      <div class="row">
+        <div class="em">✋</div>
+        <div><b>你亲自打字 → 它马上闭嘴</b><p>检测到你在某个会话发了消息，该会话静音 15 分钟；你一直聊，它一直不插嘴。</p></div>
+      </div>
+      <div class="row">
+        <div class="em">🔔</div>
+        <div><b>AI 答不了 → 飞书叫你</b><p>说了「帮您确认」类兜底话 → 该会话自动静音等你处理 + 图标红角标 + 飞书群推送，你在手机上就能收到。</p></div>
+      </div>
+      <div class="row">
+        <div class="em">🔌</div>
+        <div><b>总开关在你手里</b><p>插件弹层里一个开关随时全局关停；默认还可以设成「仅预览不发送」，先看着它答，满意再放手。</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 三绝不 ============ -->
+  <section>
+    <h2><span class="no">4</span>三个「绝不会」</h2>
+    <div class="hint">设计上就杜绝的三类事故：</div>
+    <div class="rules">
+      <div class="rule">
+        <div class="icon">🎯</div>
+        <b>绝不会回错人</b>
+        <p>每条回复带着买家编号定向发出，不依赖「当前打开哪个窗口」。并发、锁屏、后台都不影响。</p>
+      </div>
+      <div class="rule">
+        <div class="icon">🤫</div>
+        <b>绝不会抢你的话</b>
+        <p>你一打字它就静音；平台自带 AI 和你的插件 AI 分得清清楚楚，不会互相误判。</p>
+      </div>
+      <div class="rule">
+        <div class="icon">🔑</div>
+        <b>绝不会泄露 Key</b>
+        <p>大模型 Key 只存在你自己电脑的插件本地存储里，不进网页、不上传、不写给任何人。</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    抖音来客 AI 人工接管助手 · v0.3.5 · 原理示意图（2026-08-19）<br>
+    技术本质：Chrome 扩展注入客服台页面 → 订阅页面 IM SDK 的消息事件 → 大模型生成 → 调用 SDK 的 sendText 定向回复
+  </footer>
+
+</div>
+</body>
+</html>
