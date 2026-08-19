@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "抖音来客 AI 人工接管助手",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "买家会话转人工(allocated_service)后由 AI 接管自动回复；人工接管自动静音防抢答；答不了的问题通过角标/桌面通知/飞书通知店主",
   "permissions": ["storage", "downloads", "notifications"],
   "host_permissions": ["https://*.douyin.com/*", "https://open.feishu.cn/*"],

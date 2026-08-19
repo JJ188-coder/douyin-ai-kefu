@@ -42,7 +42,7 @@
         const t = setTimeout(() => {
           window.removeEventListener('message', onReply);
           reject(new Error('LLM 请求超时'));
-        }, 120000);
+        }, 45000);   // 正常回复 5-20s；45s 不响应判定挂死，交给上层重试，别让买家干等
         window.addEventListener('message', onReply);
         window.postMessage(
           { __aics: 'llm-req', reqId, payload: { messages } },

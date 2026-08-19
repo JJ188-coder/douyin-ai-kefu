@@ -177,20 +177,28 @@ agent.markAssigned({ conversationId: 'CONV8' });
 console.assert(!agent.isMuted('CONV8'), '❌ 重新分配后静音应解除');
 console.log('✅ 17. 重新分配解除残留静音, muted=', agent.isMuted('CONV8'));
 
-// 18) 同买家不同 convId 前缀（SDK 会话实例分叉）推同一条内容 → 归一化后指纹拦截，只回一次
+// 18) 同买家 convId 尾段漂移（实测 convId=买家ID:店铺ID:接待组ID，买家唯一标识是第一段）→ 按买家归一化后指纹拦截，只回一次
 const before18 = sent.length;
-onMsg({ clientId: 'FORK-1', content: '这个多少钱', isFromMe: false, senderRole: '1', conversationId: 'AAA:shop1:buyer1', pigeonMsgType: 'text', timestamp: Date.now() });
+onMsg({ clientId: 'FORK-1', content: '这个多少钱', isFromMe: false, senderRole: '1', conversationId: 'buyer9:shop1:g1', pigeonMsgType: 'text', timestamp: Date.now() });
 await sleep(450);
-onMsg({ clientId: 'FORK-2', content: '这个多少钱', isFromMe: false, senderRole: '1', conversationId: 'BBB:shop1:buyer1', pigeonMsgType: 'text', timestamp: Date.now() });
+onMsg({ clientId: 'FORK-2', content: '这个多少钱', isFromMe: false, senderRole: '1', conversationId: 'buyer9:shop1:g2', pigeonMsgType: 'text', timestamp: Date.now() });
 await sleep(450);
 console.assert(sent.length === before18 + 1, '❌ 同买家同内容跨 convId 应只回一次, 实发 ' + (sent.length - before18));
-console.log('✅ 18. convId 分叉防重（只回一次）, sent =', sent.length);
+console.log('✅ 18. convId 尾段分叉防重（只回一次）, sent =', sent.length);
 
 // 19) popup 存的纯文本人设 → applyConfig 包装成 {tone}，不静默丢失（回归：字符串直接进 state 会被 Object.assign 打散成字符）
 agent.applyConfig({ profile: '你是真人客服，绝不提AI' });
 const profNow = agent.getState().profile;
 console.assert(profNow && profNow.tone === '你是真人客服，绝不提AI', '❌ 纯文本人设应包装为 {tone}, 实际 ' + JSON.stringify(profNow).slice(0, 60));
 console.log('✅ 19. 纯文本人设正确包装为 {tone}');
+
+// 20) 跨买家隔离：两个不同买家 60s 内发同样内容 → 指纹/锁按买家 ID 隔离，各回各的（不互相误杀、不互相排队）
+const before20 = sent.length;
+onMsg({ clientId: 'XB-1', content: '在吗', isFromMe: false, senderRole: '1', conversationId: 'buyerA:shop1:g1', pigeonMsgType: 'text', timestamp: Date.now() });
+onMsg({ clientId: 'XB-2', content: '在吗', isFromMe: false, senderRole: '1', conversationId: 'buyerB:shop1:g1', pigeonMsgType: 'text', timestamp: Date.now() });
+await sleep(900);
+console.assert(sent.length === before20 + 2, '❌ 不同买家同内容应各自回复, 实发 ' + (sent.length - before20));
+console.log('✅ 20. 跨买家同内容不互杀（各回各的）, sent =', sent.length);
 
 console.log('ALL PASS');
 process.exit(0);

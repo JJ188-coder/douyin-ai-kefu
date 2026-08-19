@@ -47,13 +47,13 @@
 
   const DEFAULT_PER_TURN = 3; // 每个"消费者一条消息"回合，最多自动回复条数
 
-  // ---- 会话归一化 key：店铺:买家 ----
-  // 背景：飞鸽 SDK 对同一逻辑会话可能用多个 convId 前缀（会话实例重建/不同推送通道格式不一），
-  // 若门禁按原始 convId 隔离，同一条买家消息会以两个 key 各跑一遍完整流程 → 同义回复发两遍。
-  // 所以所有防重/限速/静音/接管状态都按「买家维度」归一化；只有发送和拉历史用原始 convId。
+  // ---- 会话归一化 key：买家 ID ----
+  // 实测 convId 结构：买家ID:店铺ID:接待组ID（买家消息的 sender_id 与第一段一致；
+  // 店铺ID:接待组ID 是全店共用的常量，绝不能拿来当 key——否则所有买家共用同一把锁/指纹/静音，
+  // 跨买家互相排队、同内容互相误杀）。SDK 对同一买家的推送可能在尾段漂移，按第一段归一化即可兜住。
+  // 只有发送和拉历史用原始 convId。
   function convKey(conv) {
-    const parts = String(conv || '').split(':');
-    return parts.length >= 2 ? parts.slice(-2).join(':') : String(conv || '');
+    return String(conv || '').split(':')[0];
   }
 
   // ---- 回合制配额 ----
