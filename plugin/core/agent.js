@@ -75,7 +75,7 @@
       if (typeof c.autoSend === 'boolean') state.autoSend = c.autoSend;
       if (typeof c.enabled === 'boolean') state.enabled = c.enabled;
       if (c.provider) state.provider = (c.provider === 'placeholder') ? 'placeholder' : 'remote'; // 具体供应商由 background 按 storage.provider 选 apiBase
-      if (c.profile) state.profile = c.profile;
+      if (c.profile) state.profile = typeof c.profile === 'string' ? { tone: c.profile } : c.profile;   // popup 存的是纯文本人设，包一层避免 Object.assign 把字符串打散成字符、人设静默丢失
       if (c.quietEnabled !== undefined) state.quietEnabled = !!c.quietEnabled;
       if (c.quietFrom !== undefined) state.quietFrom = Number(c.quietFrom) || 0;
       if (c.quietTo !== undefined) state.quietTo = Number(c.quietTo) || 0;
@@ -282,14 +282,23 @@
 
       // 组装上下文（历史 + 最新买方消息）
       const history = await historyOf(conv);
-      const decision = await l.decide({
-        providerName: state.provider,
-        message: { conversationId: conv, content: text },
-        history,
-        profile: state.profile,
-        kb: state.kb,
-        classify: b.classifyMessage,   // 角色感知：买家/人工客服/AI自己/系统
-      });
+      let decision;
+      try {
+        decision = await l.decide({
+          providerName: state.provider,
+          message: { conversationId: conv, content: text },
+          history,
+          profile: state.profile,
+          kb: state.kb,
+          classify: b.classifyMessage,   // 角色感知：买家/人工客服/AI自己/系统
+        });
+      } catch (e) {
+        // 生成失败（限速/超时/网络）：记事件日志让店主可见，而不是静默丢这条消息
+        log('decide fail:', e && e.message);
+        const { b: bb } = deps();
+        bb.emit('notice', { level: 'error', text: 'AI 生成回复失败，本条未回（买家说：' + text.slice(0, 20) + '）：' + (e && e.message) });
+        return;
+      }
       if (!decision || !decision.reply) return;
 
       // ---- 答不了 → 叫人：兜底话术命中 → 上报店主 + 本会话无限期静音等人工（你来之后从人工发消息那刻起算 15 分钟）----
