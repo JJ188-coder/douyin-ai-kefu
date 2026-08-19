@@ -64,37 +64,36 @@ await sleep(450);
 console.assert(sent.length === 2, '❌ 新买家消息应开启新回合再回 1 条');
 console.log('✅ 4. 新消息重置回合, sent =', sent.length);
 
-// 5) 无新消息时的异常重复触发（不同 clientId 但属于异常场景由 maxPerTurn 兜底）：
-//    模拟买家连发 3 条，每条都应各回 1 条
+// 5) 买家连发 3 条：第 1 条即时回；后 2 条在处理间隙到达 → 合并成一条再回，共 +2（v0.3.6 起连发合并，不再一句一答）
 buyerMsg('C-1', '问1'); buyerMsg('C-2', '问2'); buyerMsg('C-3', '问3');
 await sleep(700);
-console.assert(sent.length === 5, '❌ 连发 3 条应各回 1 条, 实发 ' + sent.length);
-console.log('✅ 5. 买家连发每条各回 1, sent =', sent.length);
+console.assert(sent.length === 4, '❌ 连发 3 条应回 2 条（1 即时 + 1 合并）, 实发 ' + sent.length);
+console.log('✅ 5. 买家连发合并回复, sent =', sent.length);
 
 
 // 6) 平台机器人欢迎语卡片（type=card, role=4）→ 不回
 onMsg({ clientId: 'CARD-4', content: '您好，请问有什么可以帮到您？', isFromMe: false, senderRole: '4', conversationId: 'CONV1', pigeonMsgType: 'card', timestamp: NOW });
 await sleep(450);
-console.assert(sent.length === 5, '❌ role=4 卡片不应回复, 实发 ' + sent.length);
+console.assert(sent.length === 4, '❌ role=4 卡片不应回复, 实发 ' + sent.length);
 console.log('✅ 6. 平台卡片(role=4)拦截, sent =', sent.length);
 
 // 7) 真人商品卡咨询（type=card, role=1）→ 回
 onMsg({ clientId: 'CARD-1', content: '这个套餐周末能用吗', isFromMe: false, senderRole: '1', conversationId: 'CONV1', pigeonMsgType: 'card', timestamp: NOW });
 await sleep(450);
-console.assert(sent.length === 6, '❌ 真人卡片(role=1)应回复, 实发 ' + sent.length);
+console.assert(sent.length === 5, '❌ 真人卡片(role=1)应回复, 实发 ' + sent.length);
 console.log('✅ 7. 真人卡片(role=1)正常回复, sent =', sent.length);
 
 // 8) 同内容换 clientId 重推（60s 内）→ 不回（指纹去重）
 onMsg({ clientId: 'NEW-ID-1', content: '这个套餐周末能用吗', isFromMe: false, senderRole: '1', conversationId: 'CONV1', pigeonMsgType: 'text', timestamp: NOW });
 await sleep(450);
-console.assert(sent.length === 6, '❌ 换id重推同内容不应再回, 实发 ' + sent.length);
+console.assert(sent.length === 5, '❌ 换id重推同内容不应再回, 实发 ' + sent.length);
 console.log('✅ 8. 内容指纹去重, sent =', sent.length);
 
 // 9) 发送锁：处理中连到两条不同内容 → 第一条回 + pending 补一条，共 2 条（不多不少）
 onMsg({ clientId: 'L-1', content: '锁测试一', isFromMe: false, senderRole: '1', conversationId: 'CONV1', pigeonMsgType: 'text', timestamp: NOW });
 onMsg({ clientId: 'L-2', content: '锁测试二', isFromMe: false, senderRole: '1', conversationId: 'CONV1', pigeonMsgType: 'text', timestamp: NOW });
 await sleep(1500);
-console.assert(sent.length === 8, '❌ 锁+pending 应共回 2 条, 实发 ' + (sent.length - 6));
+console.assert(sent.length === 7, '❌ 锁+pending 应共回 2 条, 实发 ' + (sent.length - 5));
 console.log('✅ 9. 发送锁+pending 补处理, sent =', sent.length);
 
 // 10) 人工接管静音：店主在某会话发一条消息 → 该会话买家新消息 AI 不回（不抢答）
@@ -208,6 +207,30 @@ onMsg({ clientId: 'F4-2', content: '可以带宠物吗', isFromMe: false, sender
 await sleep(450);
 console.assert(sent.length === before21 + 1, '❌ 四段格式分叉应只回一次, 实发 ' + (sent.length - before21));
 console.log('✅ 21. 四段格式 convId 分叉防重（只回一次）, sent =', sent.length);
+
+// 22) 发送前静音闸（2026-08-19 抢话事故回归）：买家消息进门后开始走流水线（这里用大模型 200ms 慢决策模拟），
+//     期间店主打字接手 → 流水线走完到出口时再查一次静音，这条回复必须丢弃不发
+globalThis.window.__llmEngine = { decide: async () => { await sleep(200); return { reply: '有的，具体看套餐哦～', delay: 0, needsHuman: false }; } };
+const before22 = sent.length;
+onMsg({ clientId: 'TK-1', content: '现在还有位置吗', isFromMe: false, senderRole: '1', conversationId: 'CONV9', pigeonMsgType: 'text', timestamp: Date.now() });
+await sleep(60);   // 流水线走到一半（大模型还在想）
+staffCb({ conversationId: 'CONV9', content: '你好，我来接', isFromMe: true, senderRole: '2', pigeonMsgType: 'text', timestamp: Date.now() });
+console.assert(agent.isMuted('CONV9'), '❌ 前置：店主打字应静音 CONV9');
+await sleep(600);  // 等流水线走完（decide 200ms + 余量）
+console.assert(sent.length === before22, '❌ 流水线期间店主接手，回复应被丢弃不发, 实发 ' + (sent.length - before22));
+console.log('✅ 22. 发送前静音闸拦截抢话, sent =', sent.length);
+
+// 23) 连发合并：买家趁第一条还在处理时连发两句 → 队列里合并成一条，只再回一条，且两句内容都送达大模型
+let lastAsk = '';
+globalThis.window.__llmEngine = { decide: async (params) => { await sleep(150); lastAsk = String((params && params.message && params.message.content) || ''); return { reply: '有的，具体看套餐哦～', delay: 0, needsHuman: false }; } };
+const before23 = sent.length;
+onMsg({ clientId: 'BM-1', content: '合并第一句', isFromMe: false, senderRole: '1', conversationId: 'CONV10', pigeonMsgType: 'text', timestamp: Date.now() });
+onMsg({ clientId: 'BM-2', content: '合并第二句', isFromMe: false, senderRole: '1', conversationId: 'CONV10', pigeonMsgType: 'text', timestamp: Date.now() });
+onMsg({ clientId: 'BM-3', content: '合并第三句', isFromMe: false, senderRole: '1', conversationId: 'CONV10', pigeonMsgType: 'text', timestamp: Date.now() });
+await sleep(1200);
+console.assert(sent.length === before23 + 2, '❌ 连发 3 句应共回 2 条（第 1 句一条 + 合并一条）, 实发 ' + (sent.length - before23));
+console.assert(lastAsk.includes('合并第二句') && lastAsk.includes('合并第三句'), '❌ 合并后两句内容应一起送达大模型, 实际: ' + lastAsk);
+console.log('✅ 23. 连发合并只回一条且内容完整, sent =', sent.length, ', 大模型收到 =', JSON.stringify(lastAsk));
 
 console.log('ALL PASS');
 process.exit(0);

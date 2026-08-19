@@ -62,6 +62,13 @@
     '3) 只做有依据的推断，绝不编造任何具体数字、价格、政策、时间、地址；' +
     '4) 确实推不出来的，诚实回应"这个我帮您确认一下哦～"，可引导致电。';
 
+  // ---- 简短硬规则：始终生效，不随人设覆盖 ----
+  // 生产反馈：买家问一句它答三段、连发几句它逐句分答，显得啰嗦机械。
+  const BREVITY_RULE =
+    '回复长度硬规则：买家问什么就只答什么，能一句话说完绝不写两句；' +
+    '不要主动补充买家没问的套餐细节、价格、注意事项；总字数控制在 60 字以内；' +
+    '买家连发多句时（最新一条消息里有多行），拢在一起用一段话统一回应，不逐句分答。';
+
   // ---- 默认人设 ----
   const DEFAULT_PROFILE = {
     name: '',
@@ -128,6 +135,7 @@
     if (kb && kb.length) sysParts.push('以下是商家知识库/常见问题，回答时优先参考：\n' + kb.join('\n'));
     if (p.rules && p.rules.length) sysParts.push('附加话术规则：\n' + p.rules.join('\n'));
     sysParts.push(REASONING_RULE);   // 固定推理守则，始终生效
+    sysParts.push(BREVITY_RULE);     // 固定简短守则，始终生效
 
     const messages = [
       { role: 'system', content: sysParts.join('\n\n') },

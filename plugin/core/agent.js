@@ -303,15 +303,15 @@
       }
       if (!decision || !decision.reply) return;
 
-      // ---- 答不了 → 叫人：兜底话术命中 → 上报店主 + 本会话无限期静音等人工（你来之后从人工发消息那刻起算 15 分钟）----
-      if (decision.needsHuman) {
-        muteConv(conv, Infinity, 'AI 答不了，已通知你处理');
-        const { b: bb0 } = deps();
-        bb0.emit('needs-human', { conversationId: conv, buyerText: text, reply: decision.reply });
-      }
-
+      const needsHuman = !!decision.needsHuman;
       if (state.autoSend) {
         await new Promise((r) => setTimeout(r, decision.delay)); // 真人感延迟
+        // 发送前最后一道闸：流水线（排队/节流/等大模型）可能走了几十秒，
+        // 期间店主一旦接手（静音被设上），这条回复直接作废，绝不抢话
+        if (isMuted(conv)) {
+          log('muted during pipeline, drop reply:', conv);
+          return;
+        }
         // 发送前会话存活检查：决策期间会话被关闭就不再补枪（买家已看不到）
         if (!b.isConversationLive(conv)) {
           log('conv closed before send, skip:', conv);
@@ -336,12 +336,33 @@
         const { b: bb } = deps();
         bb.emit('preview', { conversationId: conv, reply: decision.reply });
       }
+
+      // ---- 答不了 → 叫人：兜底话术发出后再上报店主 + 本会话无限期静音等人工 ----
+      // （必须放在发送之后：若放在发送前，发送前静音闸会把自己的兜底回复一并拦掉）
+      if (needsHuman) {
+        muteConv(conv, Infinity, 'AI 答不了，已通知你处理');
+        const { b: bb0 } = deps();
+        bb0.emit('needs-human', { conversationId: conv, buyerText: text, reply: decision.reply });
+      }
     } finally {
       state.sendLock.delete(ckey);
       const q = state.pendingMsg.get(ckey);
       if (q && q.length) {
-        const next = q.shift();
-        if (q.length) state.pendingMsg.set(ckey, q); else state.pendingMsg.delete(ckey);
+        state.pendingMsg.delete(ckey);
+        let next;
+        if (q.length === 1) {
+          next = q[0];
+        } else {
+          // 连发合并：买家趁处理间隙连发数条时合成一条理解，只回一条，不再一句一答
+          const last = q[q.length - 1];
+          // 被合并的每条都登记 clientId（最后一条除外——它随合并消息进流程时会自己登记）：
+          // 它们不再逐条进流程，SDK 重推时靠这里拦住
+          for (const m of q.slice(0, -1)) { if (m.clientId) state.seenClientId.add(m.clientId); }
+          next = Object.assign({}, last, {
+            content: q.map((m) => String(m.content || '').trim()).filter(Boolean).join('\n'),
+          });
+          log('burst merged', q.length, 'msgs into one reply:', conv);
+        }
         handleMessage(next).catch((e) => log('queued handle err', e));
       }
     }
