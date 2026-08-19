@@ -47,6 +47,15 @@
 
   const DEFAULT_PER_TURN = 3; // 每个"消费者一条消息"回合，最多自动回复条数
 
+  // ---- 会话归一化 key：店铺:买家 ----
+  // 背景：飞鸽 SDK 对同一逻辑会话可能用多个 convId 前缀（会话实例重建/不同推送通道格式不一），
+  // 若门禁按原始 convId 隔离，同一条买家消息会以两个 key 各跑一遍完整流程 → 同义回复发两遍。
+  // 所以所有防重/限速/静音/接管状态都按「买家维度」归一化；只有发送和拉历史用原始 convId。
+  function convKey(conv) {
+    const parts = String(conv || '').split(':');
+    return parts.length >= 2 ? parts.slice(-2).join(':') : String(conv || '');
+  }
+
   // ---- 回合制配额 ----
   // turn = { sentSinceTurnReset: 当前消费者消息这轮里 AI 已连发条数（兜底用） }
   function getTurn(conv) {
@@ -92,6 +101,7 @@
   // 语义：检测到你（人工客服）在某会话发了消息 → AI 对该会话静音 staffMuteMinutes 分钟；
   // 你每发一条刷新计时，你一直聊 AI 一直闭嘴；超时无人工活动后 AI 自动回来兜底。
   function muteConv(conv, minutes, reason) {
+    conv = convKey(conv);   // 归一化：同一买家多个 convId 前缀共享同一份静音状态
     if (!conv) return;
     let mins = minutes;
     if (mins === undefined || mins === null) mins = state.staffMuteMinutes;
@@ -107,8 +117,8 @@
     log('conv muted', mins, 'min:', conv, reason || '');
   }
   function isMuted(conv) {
-    const until = state.staffMuteByConv.get(conv) || 0;
-    if (Date.now() >= until) { if (until) state.staffMuteByConv.delete(conv); return false; }
+    const until = state.staffMuteByConv.get(convKey(conv)) || 0;
+    if (Date.now() >= until) { if (until) state.staffMuteByConv.delete(convKey(conv)); return false; }
     return true;
   }
   // 人工客服发消息（store-bridge onStaff 回调）→ 刷新该会话静音
@@ -169,12 +179,13 @@
     if (b.isSent(item.content)) return;      // 防回环
     const conv = item.conversationId;
     if (!conv) return;
+    const ckey = convKey(conv);   // 门禁/状态统一按买家维度，避免 SDK 多 convId 前缀绕过防重
 
-    const ctx = state.assigned.get(conv);
+    const ctx = state.assigned.get(ckey);
     // 动态接管：即使没有 allocated_service 事件，只要该会话是"当前人工接待(未关闭)"，也接管买家新消息
     if (!ctx || !ctx.assigned) {
       if (b.isConversationLive(conv)) {
-        state.assigned.set(conv, { assigned: true });
+        state.assigned.set(ckey, { assigned: true });
         log('auto-adopt live (current) conversation:', conv);
       } else {
         log('skip, conversation not assigned/live:', conv);
@@ -200,17 +211,17 @@
       return;
     }
 
-    // ---- 发送锁（最优先）：同一会话同一时刻只跑一个处理流程 ----
+    // ---- 发送锁（最优先）：同一买家同一时刻只跑一个处理流程 ----
     // 锁期间到达的消息进队列（不记账）；锁释放后逐条取出重进完整流程。
     // 这样重推/连发/系统通知无论怎么叠加，出口永远串行、每条真人消息恰好处理一次。
-    if (state.sendLock.get(conv)) {
-      const q = state.pendingMsg.get(conv) || [];
+    if (state.sendLock.get(ckey)) {
+      const q = state.pendingMsg.get(ckey) || [];
       q.push(item);
-      state.pendingMsg.set(conv, q);
+      state.pendingMsg.set(ckey, q);
       log('send locked, queued:', conv, text.slice(0, 20));
       return;
     }
-    state.sendLock.set(conv, true);
+    state.sendLock.set(ckey, true);
     try {
       // ---- 门禁0：clientId 去重（onMessage + onMessageUpsert 会双推同一条）----
       if (item.clientId) {
@@ -222,21 +233,21 @@
       }
 
       // ---- 门禁0.5：内容指纹去重（SDK 换 clientId 重推同一内容时兜底，60s 窗）----
-      const fp = conv + '|' + text;
-      const lastFp = state.lastBuyerFp.get(conv);
+      const fp = ckey + '|' + text;
+      const lastFp = state.lastBuyerFp.get(ckey);
       if (lastFp && lastFp.fp === fp && Date.now() - lastFp.at < 60000) {
         log('dup content ignored:', conv, text.slice(0, 30));
         return;
       }
-      state.lastBuyerFp.set(conv, { fp, at: Date.now() });
+      state.lastBuyerFp.set(ckey, { fp, at: Date.now() });
 
       // ---- 门禁1：回合制——每条消费者新消息开启新一轮，轮内最多回 maxRepliesPerConv 条 ----
-      const turn = getTurn(conv);
-      if (item.clientId && state.seenTurnMsg.get(conv) === item.clientId) {
+      const turn = getTurn(ckey);
+      if (item.clientId && state.seenTurnMsg.get(ckey) === item.clientId) {
         log('turn spent for this consumer msg (already replied), ignore echo:', conv);
         return;
       }
-      state.seenTurnMsg.set(conv, item.clientId);   // 记下这条消费者消息
+      state.seenTurnMsg.set(ckey, item.clientId);   // 记下这条消费者消息
       turn.sentSinceTurnReset = 0;                  // 新消费者消息 → 开启新一轮回复额度
       if (turn.sentSinceTurnReset >= (state.maxRepliesPerConv ?? DEFAULT_PER_TURN)) {
         log('safety cap reached, force stop for this consumer msg:', conv);
@@ -244,7 +255,7 @@
       }
 
       // ---- 门禁2：真人节奏（新买家消息的回复不丢，只延后）----
-      const lastReplyAt = state.lastReplyAtByConv.get(conv) || 0;
+      const lastReplyAt = state.lastReplyAtByConv.get(ckey) || 0;
       const since = Date.now() - lastReplyAt;
       if (since < state.minIntervalMs && lastReplyAt > 0) {
         const wait = state.minIntervalMs - since;
@@ -290,12 +301,17 @@
 
       if (state.autoSend) {
         await new Promise((r) => setTimeout(r, decision.delay)); // 真人感延迟
+        // 发送前会话存活检查：决策期间会话被关闭就不再补枪（买家已看不到）
+        if (!b.isConversationLive(conv)) {
+          log('conv closed before send, skip:', conv);
+          return;
+        }
         try {
           b.rememberSent(decision.reply);                     // 先登记再发送：SDK 同步回推这条消息时才不会被误判成人工发送
           b.sendText(conv, decision.reply);                     // 不打任何平台可见标记，回复就是普通人工消息
-          state.lastReplyAtByConv.set(conv, Date.now());
+          state.lastReplyAtByConv.set(ckey, Date.now());
           state.dailyCount += 1;
-          const remain = consumeTurn(conv);                 // 用掉一条本轮配额
+          const remain = consumeTurn(ckey);                 // 用掉一条本轮配额
           log('[sent]', 'conv=', conv, 'reply=', decision.reply, 'replies_this_consumer_msg=', remain);
           const { b: bb } = deps();
           bb.emit('sent', { conversationId: conv, reply: decision.reply, repliesThisConsumerMsg: remain, maxPerConsumerMsg: state.maxRepliesPerConv ?? DEFAULT_PER_TURN });
@@ -310,11 +326,11 @@
         bb.emit('preview', { conversationId: conv, reply: decision.reply });
       }
     } finally {
-      state.sendLock.delete(conv);
-      const q = state.pendingMsg.get(conv);
+      state.sendLock.delete(ckey);
+      const q = state.pendingMsg.get(ckey);
       if (q && q.length) {
         const next = q.shift();
-        if (q.length) state.pendingMsg.set(conv, q); else state.pendingMsg.delete(conv);
+        if (q.length) state.pendingMsg.set(ckey, q); else state.pendingMsg.delete(ckey);
         handleMessage(next).catch((e) => log('queued handle err', e));
       }
     }
@@ -323,8 +339,9 @@
   // ---- 转人工事件 → 标记接管 ----
   function markAssigned(item) {
     if (!item || !item.conversationId) return;
-    state.assigned.set(item.conversationId, { assigned: true });
-    state.staffMuteByConv.delete(item.conversationId);   // 新的一局：上一局残留的静音不遗传
+    const ckey = convKey(item.conversationId);
+    state.assigned.set(ckey, { assigned: true });
+    state.staffMuteByConv.delete(ckey);   // 新的一局：上一局残留的静音不遗传
     log('conversation assigned -> take over:', item.conversationId);
     const { b } = deps();
     b.emit('assigned', { conversationId: item.conversationId });
@@ -332,14 +349,14 @@
 
   // ---- 会话关闭 → 清理该会话全部状态（含人工静音：关闭后重开不受上一局静音影响）----
   function markClosed(item) {
-    const conv = item && item.conversationId;
-    if (!conv) return;
-    state.assigned.delete(conv);
-    state.staffMuteByConv.delete(conv);
-    state.lastReplyAtByConv.delete(conv);
-    state.turnByConv.delete(conv);
-    state.seenTurnMsg.delete(conv);
-    log('conversation closed, reset conv state:', conv);
+    const ckey = item && item.conversationId && convKey(item.conversationId);
+    if (!ckey) return;
+    state.assigned.delete(ckey);
+    state.staffMuteByConv.delete(ckey);
+    state.lastReplyAtByConv.delete(ckey);
+    state.turnByConv.delete(ckey);
+    state.seenTurnMsg.delete(ckey);
+    log('conversation closed, reset conv state:', item.conversationId);
   }
 
   // ---- 开关 ----
@@ -371,7 +388,7 @@
     enable, disable, handleMessage, markAssigned, markClosed, historyOf,
     applyConfig, getState: () => state, resetDaily,
     getTurn, consumeTurn, noteStaff, muteConv, isMuted,
-    unmuteConv: (conv) => { state.staffMuteByConv.delete(conv); log('conv unmuted:', conv); },
+    unmuteConv: (conv) => { state.staffMuteByConv.delete(convKey(conv)); log('conv unmuted:', conv); },
     resetConvTurn: (conv) => { state.turnByConv.delete(conv); state.seenTurnMsg.delete(conv); },
     resetAllTurns: () => { state.turnByConv.clear(); state.seenTurnMsg.clear(); },
   };

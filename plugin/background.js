@@ -138,7 +138,7 @@ async function handleNeedsHuman(p) {
   arr.push(item);
   await chrome.storage.local.set({ pendingHuman: arr.slice(-50) });
   updateBadge();
-  // 桌面通知（macOS 需在系统设置允许 Chrome 通知；失败不影响角标/飞书）
+  // 桌面通知（静默模式：只弹横幅不响铃，声音提醒走飞书手机端；macOS 需在系统设置允许 Chrome 通知；失败不影响角标/飞书）
   try {
     chrome.notifications.create('nh_' + item.id, {
       type: 'basic',
@@ -146,6 +146,7 @@ async function handleNeedsHuman(p) {
       title: '抖音客服：有买家问题需要人工处理',
       message: '买家：' + item.buyer,
       priority: 2,
+      silent: true,
     });
   } catch (e) { /* 通知不可用时静默 */ }
   // 飞书推送

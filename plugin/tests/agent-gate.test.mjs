@@ -177,5 +177,14 @@ agent.markAssigned({ conversationId: 'CONV8' });
 console.assert(!agent.isMuted('CONV8'), '❌ 重新分配后静音应解除');
 console.log('✅ 17. 重新分配解除残留静音, muted=', agent.isMuted('CONV8'));
 
+// 18) 同买家不同 convId 前缀（SDK 会话实例分叉）推同一条内容 → 归一化后指纹拦截，只回一次
+const before18 = sent.length;
+onMsg({ clientId: 'FORK-1', content: '这个多少钱', isFromMe: false, senderRole: '1', conversationId: 'AAA:shop1:buyer1', pigeonMsgType: 'text', timestamp: Date.now() });
+await sleep(450);
+onMsg({ clientId: 'FORK-2', content: '这个多少钱', isFromMe: false, senderRole: '1', conversationId: 'BBB:shop1:buyer1', pigeonMsgType: 'text', timestamp: Date.now() });
+await sleep(450);
+console.assert(sent.length === before18 + 1, '❌ 同买家同内容跨 convId 应只回一次, 实发 ' + (sent.length - before18));
+console.log('✅ 18. convId 分叉防重（只回一次）, sent =', sent.length);
+
 console.log('ALL PASS');
 process.exit(0);
