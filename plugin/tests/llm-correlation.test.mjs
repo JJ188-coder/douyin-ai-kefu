@@ -79,6 +79,15 @@ catch (e) { threw = true; }
 console.assert(threw, '❌ 持续失败应抛错让上层感知');
 console.log('✅ 4. 持续失败抛错（上层记事件日志）');
 
+// 5) 波浪线禁令（2026-08-19 店主要求回归）：模型输出带 ～/〜/~ → 发送前清洗必须删干净；
+//    且 system prompt 里必须带禁波浪线规则
+let sysSeen = '';
+engine.registerProvider('tilde', { chat: async (msgs) => { sysSeen = String(msgs[0].content || ''); return '好的亲～包您满意〜一定哦~'; } });
+const d5 = await engine.decide({ providerName: 'tilde', message: { conversationId: 'c1', content: '在吗' }, history: [], profile: {}, kb: [] });
+console.assert(d5 && d5.reply === '好的亲包您满意一定哦', '❌ 波浪线应被清洗删除, 实际: ' + (d5 && d5.reply));
+console.assert(sysSeen.includes('禁止使用波浪线'), '❌ system prompt 应含禁波浪线规则');
+console.log('✅ 5. 波浪线清洗 + 规则注入, 回复 =', JSON.stringify(d5.reply));
+
 globalThis.window = realWindow;
 console.log('ALL PASS');
 process.exit(0);

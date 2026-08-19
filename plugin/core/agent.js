@@ -52,6 +52,8 @@
   const DEFAULT_PER_TURN = 3; // 每个"消费者一条消息"回合，最多自动回复条数
   const STALE_MS = 5 * 60 * 1000; // 买家消息平台时间距今超过 5 分钟 = 迟到重推，不回
   const FP_WINDOW_MS = 3 * 60 * 1000; // 同内容换 clientId 重推的去重窗（与过期闸互补，覆盖 3 分钟内的变体重推）
+  // 买家不满信号：命中即给店主发"需要人工"提醒（红角标+飞书推送），但 AI 不闭嘴——回复照走，只是让店主看得见
+  const COMPLAIN_RE = /投诉|差评|举报|退款|退钱|太坑|失望|再也不|没灯|没挂钩|太脏|蚊子多|蚊子更|蚊子太|态度|垃圾|骗子|什么破|糊弄/;
 
   // ---- 会话归一化 key：买家 ID ----
   // 实测 convId 结构：买家ID:店铺ID:接待组ID（买家消息的 sender_id 与第一段一致；
@@ -280,6 +282,14 @@
         return;
       }
       state.lastBuyerFp.set(ckey, { fp, at: Date.now() });
+
+      // ---- 买家不满预警：命中吐槽信号 → 立刻通知店主（红角标+飞书推送），AI 回复照走不闭嘴 ----
+      // （放在指纹去重之后：重推/连发合并不会重复告警；只提醒，不静音——买家还等着回话）
+      if (COMPLAIN_RE.test(text)) {
+        const { b: bb } = deps();
+        bb.emit('needs-human', { conversationId: conv, buyerText: text, reply: '' });
+        log('complaint signal, notified owner:', conv, text.slice(0, 30));
+      }
 
       // ---- 门禁1：回合制——每条消费者新消息开启新一轮，轮内最多回 maxRepliesPerConv 条 ----
       const turn = getTurn(ckey);

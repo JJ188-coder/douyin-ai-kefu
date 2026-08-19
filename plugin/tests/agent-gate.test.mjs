@@ -279,5 +279,17 @@ await sleep(600);
 console.assert(lastAsk26 === '那烧烤呢', '❌ 第二条起应恢复对话式逐条回复（不带合集标记）, 实际: ' + JSON.stringify(lastAsk26));
 console.log('✅ 26. 转人工集中回复一次 + 之后恢复对话式, 首条 =', JSON.stringify(lastAsk26 === '那烧烤呢' ? '(已验证)' : lastAsk26));
 
+// 27) 买家不满预警（2026-08-19 差评风险事故回归）：买家话里带吐槽信号 → 立刻给店主发 needs-human
+//     提醒（红角标+飞书），但 AI 回复照走、会话不静音（买家还等着回话）
+const events27 = [];
+const origEmit = bridge.emit;
+bridge.emit = (ch) => { events27.push(ch); };
+onMsg({ clientId: 'CP-1', content: '厕所都没灯，蚊子也多', isFromMe: false, senderRole: '1', conversationId: 'CONV14', pigeonMsgType: 'text', timestamp: Date.now() });
+await sleep(600);
+bridge.emit = origEmit;
+console.assert(events27.includes('needs-human'), '❌ 吐槽信号应触发 needs-human 提醒, 实际事件: ' + events27.join(','));
+console.assert(!agent.isMuted('CONV14'), '❌ 吐槽提醒不应静音会话');
+console.log('✅ 27. 买家不满即时通知店主且不静音');
+
 console.log('ALL PASS');
 process.exit(0);
