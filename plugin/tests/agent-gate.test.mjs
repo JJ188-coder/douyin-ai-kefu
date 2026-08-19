@@ -232,5 +232,52 @@ console.assert(sent.length === before23 + 2, '❌ 连发 3 句应共回 2 条（
 console.assert(lastAsk.includes('合并第二句') && lastAsk.includes('合并第三句'), '❌ 合并后两句内容应一起送达大模型, 实际: ' + lastAsk);
 console.log('✅ 23. 连发合并只回一条且内容完整, sent =', sent.length, ', 大模型收到 =', JSON.stringify(lastAsk));
 
+// 24) 过期重推闸（2026-08-19 迟到 19 分钟回复事故回归）：SDK 把 6 分钟前的买家消息换个 clientId 重推，
+//     bootAt 防重放拦不住（消息晚于启动）、内容指纹窗也过期 → 过期闸必须拦下，一条都不回
+agent.getState().bootAt = Date.now() - 15 * 60 * 1000;   // 模拟 agent 已持续运行 15 分钟
+const before24 = sent.length;
+onMsg({ clientId: 'STALE-1', content: '六分钟前问的旧问题', isFromMe: false, senderRole: '1', conversationId: 'CONV11', pigeonMsgType: 'text', timestamp: Date.now() - 6 * 60 * 1000 });
+await sleep(600);
+console.assert(sent.length === before24, '❌ 迟到 6 分钟的重推不应回复, 实发 ' + (sent.length - before24));
+console.log('✅ 24. 过期重推拦截（>5 分钟旧消息不回）, sent =', sent.length);
+
+// 25) 乱序合并升序（2026-08-19 回答顺序颠倒反馈回归）：SDK 批量同步可能新消息先入队，
+//     队列合并必须按平台时间从旧到新排序——先问的先答
+let lastAsk25 = '';
+globalThis.window.__llmEngine = { decide: async (params) => { await sleep(150); lastAsk25 = String((params && params.message && params.message.content) || ''); return { reply: '好', delay: 0, needsHuman: false }; } };
+const before25 = sent.length;
+const t25 = Date.now();
+onMsg({ clientId: 'OO-1', content: '先问的第一句', isFromMe: false, senderRole: '1', conversationId: 'CONV12', pigeonMsgType: 'text', timestamp: t25 });
+onMsg({ clientId: 'OO-3', content: '后问的第三句', isFromMe: false, senderRole: '1', conversationId: 'CONV12', pigeonMsgType: 'text', timestamp: t25 + 2000 });   // 乱序：晚的先入队
+onMsg({ clientId: 'OO-2', content: '中间第二句', isFromMe: false, senderRole: '1', conversationId: 'CONV12', pigeonMsgType: 'text', timestamp: t25 + 1000 });
+await sleep(1200);
+console.assert(sent.length === before25 + 2, '❌ 连发 3 句应共回 2 条（第 1 句一条 + 合并一条）, 实发 ' + (sent.length - before25));
+console.assert(lastAsk25 === '中间第二句\n后问的第三句', '❌ 合并后应按提问时间从旧到新排列, 实际: ' + JSON.stringify(lastAsk25));
+console.log('✅ 25. 乱序连发合并后按从旧到新排序, 大模型收到 =', JSON.stringify(lastAsk25));
+
+// 26) 转人工集中回复（2026-08-19 店主反馈：接管后别把之前每条都单独回一遍）：
+//     接管后第一条买家消息应带上"转人工前积压问题合集"一次答完；第二条起恢复对话式逐条回复
+const hist26 = [
+  { content: '周末有位置吗', isFromMe: false, senderRole: '1', createTime: Date.now() - 60000 },
+  { content: '能带狗吗', isFromMe: false, senderRole: '1', createTime: Date.now() - 50000 },
+  { content: '您好，请问有什么可以帮到您？', isFromMe: false, senderRole: '4', createTime: Date.now() - 55000 },   // 平台机器人，应排除
+  { content: '周末有位置吗', isFromMe: false, senderRole: '1', createTime: Date.now() - 40000 },                  // 重复问题，应去重
+];
+bridge.getChatStore = () => ({ _imSdkStore: { getMessagesByConversation: async () => hist26 } });
+let lastAsk26 = '';
+globalThis.window.__llmEngine = { decide: async (params) => { lastAsk26 = String((params && params.message && params.message.content) || ''); return { reply: '好', delay: 0, needsHuman: false }; } };
+agent.markAssigned({ conversationId: 'CONV13' });
+const before26 = sent.length;
+onMsg({ clientId: 'HO-1', content: '人工', isFromMe: false, senderRole: '1', conversationId: 'CONV13', pigeonMsgType: 'text', timestamp: Date.now() });
+await sleep(600);
+console.assert(sent.length === before26 + 1, '❌ 接管后第一条应回 1 条, 实发 ' + (sent.length - before26));
+console.assert(lastAsk26.indexOf('周末有位置吗') === lastAsk26.lastIndexOf('周末有位置吗'), '❌ 重复问题应去重, 实际: ' + JSON.stringify(lastAsk26));
+console.assert(lastAsk26.includes('周末有位置吗') && lastAsk26.includes('能带狗吗'), '❌ 集中回复应包含转人工前全部问题, 实际: ' + JSON.stringify(lastAsk26));
+console.assert(!lastAsk26.includes('帮到您'), '❌ 平台机器人发言不应混入问题合集');
+onMsg({ clientId: 'HO-2', content: '那烧烤呢', isFromMe: false, senderRole: '1', conversationId: 'CONV13', pigeonMsgType: 'text', timestamp: Date.now() });
+await sleep(600);
+console.assert(lastAsk26 === '那烧烤呢', '❌ 第二条起应恢复对话式逐条回复（不带合集标记）, 实际: ' + JSON.stringify(lastAsk26));
+console.log('✅ 26. 转人工集中回复一次 + 之后恢复对话式, 首条 =', JSON.stringify(lastAsk26 === '那烧烤呢' ? '(已验证)' : lastAsk26));
+
 console.log('ALL PASS');
 process.exit(0);

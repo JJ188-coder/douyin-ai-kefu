@@ -43,9 +43,15 @@
     // ---- 人工接管静音：你在会话里发消息，AI 就闭嘴 ----
     staffMuteByConv: new Map(), // convId -> mutedUntil（时间戳）。人工每发一条刷新计时
     staffMuteMinutes: 15,     // 人工接管后 AI 静音时长（分钟）
+    // ---- 转人工集中回复 ----
+    // 语义：买家在平台机器人阶段积压的问题，AI 接管后处理的第一条买家消息里集中一段答完；
+    // 之后买家再发的新消息恢复对话式逐条回复。consolidated 标记保证只集中一次。
+    handoverByConv: new Map(), // convKey -> { at: 接管时间, consolidated: 是否已集中回复过 }
   };
 
   const DEFAULT_PER_TURN = 3; // 每个"消费者一条消息"回合，最多自动回复条数
+  const STALE_MS = 5 * 60 * 1000; // 买家消息平台时间距今超过 5 分钟 = 迟到重推，不回
+  const FP_WINDOW_MS = 3 * 60 * 1000; // 同内容换 clientId 重推的去重窗（与过期闸互补，覆盖 3 分钟内的变体重推）
 
   // ---- 会话归一化 key：买家 ID ----
   // 实测 convId 结构：买家ID:店铺ID:接待组ID（买家消息的 sender_id 与第一段一致；
@@ -149,6 +155,28 @@
     }
   }
 
+  // ---- 转人工前积压问题提取 ----
+  // 从历史里捞"接管时间点之前 30 分钟内"买家发过的文字问题，去重、去掉系统通知/卡片占位，
+  // 最多 8 条（再多的基本是刷屏，集中回复也没法看）。30 分钟窗是防 allocated 事件重放把远古问题翻出来重答。
+  function preHandoverQuestions(history, handoverAt) {
+    const seen = new Set(); const out = [];
+    const cutoff = Number(handoverAt) || 0;
+    for (const m of history || []) {
+      if (!m || m.isFromMe) continue;
+      const role = String(m.senderRole || '');
+      if (role && role !== '1' && role !== '3') continue;   // 只要真人买家，平台机器人(role=4)/客服(role=2)不算
+      const t = Number(m.createTime || m.timestamp || 0);
+      if (cutoff && t && t >= cutoff) continue;             // 接管之后的不管
+      if (cutoff && t && t < cutoff - 30 * 60 * 1000) continue; // 接管前 30 分钟以外的远古问题不管
+      const c = String(m.content || '').trim();
+      if (!c || c === '[卡片消息]' || c === '人工' || c === '转人工' || c.indexOf('进线咨询') >= 0) continue;
+      if (seen.has(c)) continue;
+      seen.add(c); out.push(c);
+      if (out.length >= 8) break;
+    }
+    return out;
+  }
+
   async function handleMessage(item) {
     const { b, l } = deps();
     if (!state.enabled) return;
@@ -163,6 +191,13 @@
     // 历史重推防护：页面刷新/重连后 SDK 会把近期旧消息再推一遍，早于启动时间的一律不回
     if (item.timestamp && state.bootAt && item.timestamp < state.bootAt - 3000) {
       log('ignore history replay:', item.conversationId, String(item.content || '').slice(0, 30));
+      return;
+    }
+    // 过期重推防护：SDK 会把几分钟甚至十几分钟前的买家消息换个 clientId 再推一遍，
+    // 内容指纹只有几分钟窗，拦不住 → 表现为隔很久突然回一条旧问题（抢话/啰嗦的根源之一）。
+    // 买家消息的 timestamp 是平台创建时间，迟到超过 5 分钟的一律视为重推丢弃。
+    if (item.timestamp && Date.now() - item.timestamp > STALE_MS) {
+      log('stale replay ignored:', item.conversationId, String(item.content || '').slice(0, 30));
       return;
     }
     // ---- 只回真人买家：type 必须是 text 或买家卡片；role=4(平台机器人/欢迎语)/2(客服)一律不回 ----
@@ -188,6 +223,9 @@
     if (!ctx || !ctx.assigned) {
       if (b.isConversationLive(conv)) {
         state.assigned.set(ckey, { assigned: true });
+        if (!state.handoverByConv.has(ckey)) {
+          state.handoverByConv.set(ckey, { at: Number(item.timestamp) || Date.now(), consolidated: false });
+        }
         log('auto-adopt live (current) conversation:', conv);
       } else {
         log('skip, conversation not assigned/live:', conv);
@@ -234,10 +272,10 @@
         state.seenClientId.add(item.clientId);
       }
 
-      // ---- 门禁0.5：内容指纹去重（SDK 换 clientId 重推同一内容时兜底，60s 窗）----
+      // ---- 门禁0.5：内容指纹去重（SDK 换 clientId 重推同一内容时兜底，3 分钟窗；更久的由过期闸拦）----
       const fp = ckey + '|' + text;
       const lastFp = state.lastBuyerFp.get(ckey);
-      if (lastFp && lastFp.fp === fp && Date.now() - lastFp.at < 60000) {
+      if (lastFp && lastFp.fp === fp && Date.now() - lastFp.at < FP_WINDOW_MS) {
         log('dup content ignored:', conv, text.slice(0, 30));
         return;
       }
@@ -284,11 +322,25 @@
 
       // 组装上下文（历史 + 最新买方消息）
       const history = await historyOf(conv);
+
+      // ---- 转人工集中回复：接管后处理的第一条买家消息，把转人工前积压的问题合进同一条，一次答完 ----
+      // （以转人工为分界线：之前的集中一段答完；之后买家再发的新消息走正常对话式逐条回复）
+      const hand = state.handoverByConv.get(ckey);
+      let askText = text;
+      if (hand && !hand.consolidated) {
+        hand.consolidated = true;   // 只集中答这一次，哪怕没有积压问题也不再走这个分支
+        const pre = preHandoverQuestions(history, hand.at);
+        if (pre.length) {
+          askText = '（转人工前买家问过，请集中一段答完，勿遗漏）\n' + pre.join('\n') + '\n（转人工后买家新说）\n' + text;
+          log('handover consolidation:', ckey, 'pre-questions =', pre.length);
+        }
+      }
+
       let decision;
       try {
         decision = await l.decide({
           providerName: state.provider,
-          message: { conversationId: conv, content: text },
+          message: { conversationId: conv, content: askText },
           history,
           profile: state.profile,
           kb: state.kb,
@@ -354,14 +406,16 @@
           next = q[0];
         } else {
           // 连发合并：买家趁处理间隙连发数条时合成一条理解，只回一条，不再一句一答
-          const last = q[q.length - 1];
-          // 被合并的每条都登记 clientId（最后一条除外——它随合并消息进流程时会自己登记）：
+          // 按提问时间从旧到新排序（SDK 重推/批量同步可能新消息先到），保证回答顺序不颠倒
+          const sorted = q.slice().sort((a, b) => (Number(a && a.timestamp) || 0) - (Number(b && b.timestamp) || 0));
+          // 被合并的每条都登记 clientId（最新一条除外——它随合并消息进流程时会自己登记）：
           // 它们不再逐条进流程，SDK 重推时靠这里拦住
-          for (const m of q.slice(0, -1)) { if (m.clientId) state.seenClientId.add(m.clientId); }
+          for (const m of sorted.slice(0, -1)) { if (m.clientId) state.seenClientId.add(m.clientId); }
+          const last = sorted[sorted.length - 1];
           next = Object.assign({}, last, {
-            content: q.map((m) => String(m.content || '').trim()).filter(Boolean).join('\n'),
+            content: sorted.map((m) => String(m.content || '').trim()).filter(Boolean).join('\n'),
           });
-          log('burst merged', q.length, 'msgs into one reply:', conv);
+          log('burst merged', sorted.length, 'msgs into one reply (oldest-first):', conv);
         }
         handleMessage(next).catch((e) => log('queued handle err', e));
       }
@@ -373,6 +427,7 @@
     if (!item || !item.conversationId) return;
     const ckey = convKey(item.conversationId);
     state.assigned.set(ckey, { assigned: true });
+    state.handoverByConv.set(ckey, { at: Number(item.timestamp) || Date.now(), consolidated: false });   // 新的一局：允许再集中答一次
     state.staffMuteByConv.delete(ckey);   // 新的一局：上一局残留的静音不遗传
     log('conversation assigned -> take over:', item.conversationId);
     const { b } = deps();
@@ -385,6 +440,7 @@
     if (!ckey) return;
     state.assigned.delete(ckey);
     state.staffMuteByConv.delete(ckey);
+    state.handoverByConv.delete(ckey);
     state.lastReplyAtByConv.delete(ckey);
     state.turnByConv.delete(ckey);
     state.seenTurnMsg.delete(ckey);
