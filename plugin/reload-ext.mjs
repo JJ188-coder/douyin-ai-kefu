@@ -42,12 +42,11 @@ for (let i = 0; i < 30; i++) {
   if (v === true) { ready = true; break; }
 }
 if (!ready) { console.log('PAGE_NOT_READY'); process.exit(1); }
-// 3) 重新配置
+// 3) 等 host-bridge 把 chrome.storage 的持久化配置推完（页面加载后 0/1.5/4s 三次幂等下发），只打印状态，绝不覆盖线上配置
+await new Promise(r => setTimeout(r, 4500));
 const cfg = await evalJs(`
-  window.__agent.applyConfig({ provider: 'placeholder', autoSend: true, enabled: true, maxRepliesPerConv: 1 });
-  window.__agent.enable({ provider: 'placeholder', autoSend: true });
-  const s = window.__agent.getState();
-  ({ enabled: s.enabled, autoSend: s.autoSend, provider: s.provider, maxPerTurn: s.maxRepliesPerConv, bootAtSet: s.bootAt > 0, minInterval: s.minIntervalMs })
+  (() => { const s = window.__agent.getState();
+    return { enabled: s.enabled, autoSend: s.autoSend, provider: s.provider, maxPerTurn: s.maxRepliesPerConv, bootAtSet: s.bootAt > 0, minInterval: s.minIntervalMs, profileTone: !!(s.profile && s.profile.tone) }; })()
 `);
 console.log(JSON.stringify(cfg));
 process.exit(0);

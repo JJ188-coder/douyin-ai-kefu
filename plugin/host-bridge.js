@@ -13,7 +13,8 @@
       chrome.runtime.sendMessage({ type: 'llm-chat', payload: { messages: d.payload.messages } }, (res) => {
         const ok = !chrome.runtime.lastError;
         window.postMessage(
-          { __aics: 'llm-reply', ok: ok && !!(res && res.ok), text: ok ? res.text : '', error: ok ? (res.error || '') : (chrome.runtime.lastError.message || '') },
+          // reqId 原样带回：并发请求各认各的回复
+          { __aics: 'llm-reply', reqId: d.reqId, ok: ok && !!(res && res.ok), text: ok ? res.text : '', error: ok ? (res.error || '') : (chrome.runtime.lastError.message || '') },
           window.location.origin
         );
       });

@@ -186,5 +186,11 @@ await sleep(450);
 console.assert(sent.length === before18 + 1, '❌ 同买家同内容跨 convId 应只回一次, 实发 ' + (sent.length - before18));
 console.log('✅ 18. convId 分叉防重（只回一次）, sent =', sent.length);
 
+// 19) popup 存的纯文本人设 → applyConfig 包装成 {tone}，不静默丢失（回归：字符串直接进 state 会被 Object.assign 打散成字符）
+agent.applyConfig({ profile: '你是真人客服，绝不提AI' });
+const profNow = agent.getState().profile;
+console.assert(profNow && profNow.tone === '你是真人客服，绝不提AI', '❌ 纯文本人设应包装为 {tone}, 实际 ' + JSON.stringify(profNow).slice(0, 60));
+console.log('✅ 19. 纯文本人设正确包装为 {tone}');
+
 console.log('ALL PASS');
 process.exit(0);

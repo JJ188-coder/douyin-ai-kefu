@@ -28,19 +28,24 @@
   registerProvider('remote', {
     chat: async (messages) => {
       return await new Promise((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error('LLM 请求超时')), 120000);
-        const finish = (res) => { clearTimeout(t); resolve(res); };
+        // 请求编号：并发会话各自只认自己的回复，否则先回来的回复会被所有等待者同时拿走（内容串台）
+        const reqId = 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
         const onReply = (ev) => {
-          if (ev && ev.data && ev.data.__aics === 'llm-reply') {
+          if (ev && ev.data && ev.data.__aics === 'llm-reply' && ev.data.reqId === reqId) {
             window.removeEventListener('message', onReply);
+            clearTimeout(t);
             const { ok, text, error } = ev.data;
             if (!ok) reject(new Error(error || 'LLM 调用失败'));
-            else finish(text);
+            else resolve(text);
           }
         };
+        const t = setTimeout(() => {
+          window.removeEventListener('message', onReply);
+          reject(new Error('LLM 请求超时'));
+        }, 120000);
         window.addEventListener('message', onReply);
         window.postMessage(
-          { __aics: 'llm-req', payload: { messages } },
+          { __aics: 'llm-req', reqId, payload: { messages } },
           window.location.origin
         );
       });
@@ -134,7 +139,15 @@
       messages.push({ role: 'user', content: lastUser });
     }
 
-    const reply = await client.chat(messages, { maxTokens: p.maxTokens });
+    // 供应商限速/网络抖动时隔 2 秒重试一次；再失败才抛给上层记事件日志
+    let reply;
+    try {
+      reply = await client.chat(messages, { maxTokens: p.maxTokens });
+    } catch (e) {
+      log('chat fail, retry once in 2s:', e && e.message);
+      await new Promise((r) => setTimeout(r, 2000));
+      reply = await client.chat(messages, { maxTokens: p.maxTokens });
+    }
     const trimmed = cleanReply(stripTag(reply));   // 防模型照抄角色标签 + 去 markdown 符号
     if (!trimmed) return null;
     return { reply: trimmed, delay: humanDelay(p), conversationId: message && message.conversationId, needsHuman: detectNeedsHuman(trimmed) };
