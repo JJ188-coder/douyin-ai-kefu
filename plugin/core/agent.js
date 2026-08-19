@@ -50,10 +50,12 @@
   // ---- 会话归一化 key：买家 ID ----
   // 实测 convId 结构：买家ID:店铺ID:接待组ID（买家消息的 sender_id 与第一段一致；
   // 店铺ID:接待组ID 是全店共用的常量，绝不能拿来当 key——否则所有买家共用同一把锁/指纹/静音，
-  // 跨买家互相排队、同内容互相误杀）。SDK 对同一买家的推送可能在尾段漂移，按第一段归一化即可兜住。
-  // 只有发送和拉历史用原始 convId。
+  // 跨买家互相排队、同内容互相误杀）。另有四段格式 0:1:接待组ID:买家ID（消息 ext 的 src_conversation_id 实测），
+  // 两种格式都取买家 ID 那一段。只有发送和拉历史用原始 convId。
   function convKey(conv) {
-    return String(conv || '').split(':')[0];
+    const parts = String(conv || '').split(':');
+    if (parts.length >= 4 && parts[0] === '0') return parts[parts.length - 1];   // 0:1:接待组:买家
+    return parts[0];   // 买家:店铺:接待组
   }
 
   // ---- 回合制配额 ----

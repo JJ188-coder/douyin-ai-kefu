@@ -41,7 +41,7 @@
           publish('chatlog', {
             t: new Date(m.createTime || Date.now()).toISOString(),
             conv: String(conv).slice(-12),
-            who: who === 'buyer' ? 'buyer' : (who === 'aiSelf' ? 'ai' : 'staff'),
+            who: who === 'buyer' ? 'buyer' : (who === 'aiSelf' ? 'ai' : (who === 'platformAi' ? 'platform' : 'staff')),
             text: text.slice(0, 500),
           });
         }
@@ -91,7 +91,7 @@
       publish('chatlog', {
         t: new Date(item.timestamp || Date.now()).toISOString(),
         conv: String(item.conversationId || '').slice(-12),
-        who: who === 'buyer' ? 'buyer' : 'staff',
+        who: who === 'buyer' ? 'buyer' : (who === 'platformAi' ? 'platform' : 'staff'),
         text: text.slice(0, 500),
       });
     });

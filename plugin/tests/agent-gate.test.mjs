@@ -200,5 +200,14 @@ await sleep(900);
 console.assert(sent.length === before20 + 2, '❌ 不同买家同内容应各自回复, 实发 ' + (sent.length - before20));
 console.log('✅ 20. 跨买家同内容不互杀（各回各的）, sent =', sent.length);
 
+// 21) convId 四段格式分叉（实测存在 0:1:接待组:买家 与 买家:店铺:接待组 两种格式，同一买家）→ 归一化后只回一次
+const before21 = sent.length;
+onMsg({ clientId: 'F4-1', content: '可以带宠物吗', isFromMe: false, senderRole: '1', conversationId: 'buyer7:shop1:g1', pigeonMsgType: 'text', timestamp: Date.now() });
+await sleep(450);
+onMsg({ clientId: 'F4-2', content: '可以带宠物吗', isFromMe: false, senderRole: '1', conversationId: '0:1:g1:buyer7', pigeonMsgType: 'text', timestamp: Date.now() });
+await sleep(450);
+console.assert(sent.length === before21 + 1, '❌ 四段格式分叉应只回一次, 实发 ' + (sent.length - before21));
+console.log('✅ 21. 四段格式 convId 分叉防重（只回一次）, sent =', sent.length);
+
 console.log('ALL PASS');
 process.exit(0);

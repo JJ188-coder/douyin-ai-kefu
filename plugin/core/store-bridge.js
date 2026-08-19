@@ -98,11 +98,12 @@
     }
   }
 
-  // ---- 5.1 消息角色分类：区分买家/人工客服/AI 自己/系统 ----
+  // ---- 5.1 消息角色分类：区分买家/真人客服/平台AI/AI自己/系统 ----
   // 买家：isFromMe=false（senderRole 1/3 多属买家）
-  // AI 自己：我们发的（bizExt.aiFlag=1）
-  // 人工客服：isFromMe=true 且非 AI 标记（senderRole=2）
-  // 系统/事件：allocated_service / close / 空内容
+  // 平台AI/平台系统：senderRole=4（智能客服机器人以店铺身份发言时 isFromMe=true；欢迎语等系统通知 isFromMe=false）
+  // AI 自己：我们发的（bizExt.aiFlag=1 或内容在发送记录里）
+  // 真人客服：isFromMe=true、role≠4、且非 AI 发送记录（senderRole=2）
+  // 系统/事件：allocated_service / close / user_enter_time / 空内容
   function classifyMessage(msg) {
     const ext = (msg && msg.bizExt) || {};
     const oext = (msg && msg.originExt) || {};
@@ -114,6 +115,10 @@
     // AI 自己发的（历史兼容：aiFlag 标记；新发的靠发送记录内容匹配识别，不再往 bizExt 打标——平台会显示 AI 标识）
     if (ext.aiFlag === '1' || ext.sender === 'ai' || oext.aiFlag === '1') {
       return 'aiSelf';
+    }
+    // 平台侧发言（智能客服机器人/平台系统通知）：不是真人打字，绝不触发人工静音
+    if (msg.senderRole === '4') {
+      return 'platformAi';
     }
     if (msg.isFromMe === false) {
       return 'buyer';
@@ -192,6 +197,7 @@
           if (typeof onMessage === 'function') onMessage(item);
         } else if (String(msg.content || '').trim() && !isSent(msg.content)) {
           // 人工客服本人在发消息（排除 AI 自己发的）→ 派发人工活动，agent 据此静音防抢答
+          if (msg.senderRole === '4') return;                        // 平台智能客服/系统发言不是真人打字，不静音
           const ts = msg.createTime || 0;
           if (ts && ts < listenAt - 3000) return;                 // 历史重推（重载/重连后 SDK 重放）不算人工活动
           if (SYS_STAFF_RE.test(String(msg.content).trim())) return; // 系统提示/自动欢迎语不算人工打字
