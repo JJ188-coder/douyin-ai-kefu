@@ -54,5 +54,20 @@ console.assert(closeEvents.length >= 1, '❌ 关闭提示应派发 conversation-
 console.assert(staffEvents.length === staffBefore, '❌ 关闭提示不应算人工活动');
 console.log('✅ 6. 关闭提示派发 closed 且不误判人工, close =', closeEvents.length);
 
+// 7) 平台智能客服消息（isFromMe=true, senderRole=4）→ 不算人工活动，不触发静音
+const staffBefore7 = staffEvents.length;
+fire({ clientId: 'p1', content: '平台机器人：这个问题答案是……', isFromMe: true, senderRole: '4', bizConversationId: 'C1', pigeonMsgType: 'text', createTime: NOW });
+console.assert(staffEvents.length === staffBefore7, '❌ 平台 AI 发言不应算人工活动');
+console.log('✅ 7. 平台 AI 发言不触发人工静音, events =', staffEvents.length);
+
+// 8) 四类角色分类：买家 / 平台AI(两种 isFromMe) / 我们的AI / 真人客服
+console.assert(bridge.classifyMessage({ isFromMe: true, senderRole: '4', content: 'x', pigeonMsgType: 'text' }) === 'platformAi', '❌ isFromMe=true 的 role4 应分类 platformAi');
+console.assert(bridge.classifyMessage({ isFromMe: false, senderRole: '4', content: '欢迎语', pigeonMsgType: 'text' }) === 'platformAi', '❌ isFromMe=false 的 role4 应分类 platformAi');
+bridge.rememberSent('我们自己发的话术');
+console.assert(bridge.classifyMessage({ isFromMe: true, senderRole: '2', content: '我们自己发的话术', pigeonMsgType: 'text' }) === 'aiSelf', '❌ 发送记录命中应分类 aiSelf');
+console.assert(bridge.classifyMessage({ isFromMe: true, senderRole: '2', content: '人工在打字', pigeonMsgType: 'text' }) === 'staff', '❌ 真人打字应分类 staff');
+console.assert(bridge.classifyMessage({ isFromMe: false, senderRole: '1', content: '在吗', pigeonMsgType: 'text' }) === 'buyer', '❌ 买家应分类 buyer');
+console.log('✅ 8. 角色分类：买家/平台AI/我们的AI/真人客服 四类正确');
+
 console.log('ALL PASS');
 process.exit(0);
