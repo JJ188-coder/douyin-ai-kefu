@@ -365,6 +365,12 @@
       }
       if (!decision || !decision.reply) return;
 
+      // 反幻觉门禁拦过这条回复（已替换为安全兜底）：记事件日志让店主看到拦截原因
+      if (decision.blockedBy) {
+        const { b: bn } = deps();
+        bn.emit('notice', { level: 'warn', text: '已拦截一条疑似幻觉回复（' + decision.blockedBy + '），已改发安全兜底话术' });
+      }
+
       const needsHuman = !!decision.needsHuman;
       if (state.autoSend) {
         await new Promise((r) => setTimeout(r, decision.delay)); // 真人感延迟

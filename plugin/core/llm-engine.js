@@ -98,10 +98,23 @@
     '2) 买家只发表情、图片或没有实际内容的消息时，不要发挥想象，用一句简短礼貌的中性话术即可，如"嘿嘿，有问题随时喊我"。';
 
   // ---- 吐槽应对规则：买家抱怨时先诚恳道歉，绝不轻描淡写 ----
+  // 注意：只承诺"反馈核实"（插件确实会推送给店主），绝不承诺具体线下动作——
+  // "让人跟进"这种写法曾诱导模型说出"给您拿点药膏送过去"（2026-08-19 幻觉事故）。
   const COMPLAINT_RULE =
     '吐槽应对规则：买家在抱怨或表达不满（设施问题、蚊虫、卫生、服务、扬言投诉/差评等）时——' +
-    '先真诚道歉并表示重视（"实在抱歉""您反馈的我都记下了"），说明会马上改进或让人跟进；' +
+    '先真诚道歉并表示重视（"实在抱歉""您反馈的我都记下了"），安抚口径只说"马上反馈给店里核实处理"；' +
     '语气要诚恳收敛，绝不轻描淡写，禁止"难免的""哈哈""正常现象"这类敷衍说法。';
+
+  // ---- 反编造铁律：最高优先级，违反即事故（2026-08-19 幻觉事故后设立）----
+  // 事故：买家吐槽蚊子，模型回"我给您拿点药膏先涂上""药膏马上给您送到10号桌"——
+  // 虚构线下服务承诺，买家真坐在桌边等一支不存在的药膏。以下三条任何 prompt 都不得违反：
+  const ANTI_FAB_RULE =
+    '反编造铁律（最高优先级，违反任何一条都是严重事故）：' +
+    '1) 绝不承诺任何线下具体动作：禁止"给您送/拿/端/带/递""送到您桌上/位置上""我马上让人去处理/叫人过去"' +
+    '“已经帮您订好/预约好/预留/留好/登记/备注好”；安抚只能说“我记下了，马上反馈给店里核实处理”；' +
+    '2) 绝不主动承诺钱相关让步：退款、赔偿、免单、赠送、折扣一律不许说，买家要求时回"我帮您向店里申请确认一下"；' +
+    '3) 具体事实（电话、价格、时间、地址、任何数字）只能用知识库里明写的或买家自己说过的；' +
+    '知识库没有的一律回"帮您确认一下"，绝不现编。拿不准就当你不知道。';
 
   // ---- 情绪判断规则：先看买家脸色再开口 ----
   // 生产事故（2026-08-19）：买家明显带着气来（吐槽蚊子、设施），模型还在开玩笑式接话。
@@ -172,6 +185,108 @@
     return NEEDS_HUMAN_RE.test(String(reply || ''));
   }
 
+  // ==================== 反幻觉门禁（发送前的程序闸）====================
+  // 背景（2026-08-19 幻觉事故）：prompt 写得再狠，模型仍会"顺着买家说"——
+  // 虚构"给您拿药膏送到10号桌"这种线下服务承诺。prompt 是软约束，这里是硬闸门：
+  // 生成后、发送前，对回复做确定性校验，不合格直接替换为安全兜底 + needsHuman 通知店主。
+  //
+  // 两道检查：
+  //   A. 行动承诺闸：线下具体动作（送/拿/端东西、让人去现场、已订好/预留好）与
+  //      金钱让步（退款/赔偿/免单/赠送）一律拦截——这类承诺知识库不可能授权；
+  //   B. 事实核对闸：回复里的电话号码、价格、时间、具体数字，必须能在
+  //      「知识库 + 买家/真人客服说过的话」里找到出处，找不到即编造，拦截。
+  //      证据刻意排除 AI 自己说过的（防止幻觉自我循环加强）。
+
+  // 中文数字 → 阿拉伯数字（覆盖客服对话常见写法，含"十X/X十/两"）
+  function cn2num(s) {
+    const map = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+    return String(s || '').replace(/[零〇一二两三四五六七八九十]{1,3}/g, (w) => {
+      if (w === '十') return '10';
+      const t = w.indexOf('十');
+      if (t === 0) return '1' + (map[w[1]] != null ? map[w[1]] : '');        // 十X → 1X
+      if (t > 0) {                                                            // X十 / X十Y
+        const hi = map[w[0]] != null ? map[w[0]] : '';
+        const lo = w.length > t + 1 && map[w[t + 1]] != null ? map[w[t + 1]] : '0';
+        return String(hi) + String(lo);
+      }
+      return w.split('').map((c) => (map[c] != null ? map[c] : c)).join('');
+    });
+  }
+
+  // 时间表达式归一化为 H:MM（"晚上8点"→"20:00"，"9点半"→"9:30"），供跨写法比对
+  function extractTimes(text) {
+    const s = cn2num(text);
+    const out = new Set();
+    for (const m of s.matchAll(/(\d{1,2})[:：](\d{1,2})/g)) out.add(Number(m[1]) + ':' + m[2].padStart(2, '0'));
+    for (const m of s.matchAll(/(凌晨|早上|上午|中午|下午|晚上|晚间|夜里|晚|傍晚)?(\d{1,2})点(半|\d{1,2}分)?/g)) {
+      let h = Number(m[2]);
+      let mm = '00';
+      if (m[3] === '半') mm = '30';
+      else if (m[3]) mm = String(parseInt(m[3], 10)).padStart(2, '0');
+      if (/(下午|晚上|晚间|夜里|晚|傍晚)/.test(m[1] || '') && h < 12) h += 12;
+      out.add(h + ':' + mm);
+    }
+    return out;
+  }
+
+  // 抽取事实：电话 / 数字（价格数量等一律按裸数字核对） / 时间
+  function extractFacts(text) {
+    const s = cn2num(text);
+    const phones = new Set(s.match(/1\d{10}/g) || []);
+    const times = extractTimes(s);
+    // 裸数字核对前先把时间表达式和电话剥掉——它们已由各自专项核对负责，
+    // 否则"晚上8点"里的 8、"9:30"里的 9/30 会被当成独立数字误伤
+    const stripped = s
+      .replace(/1\d{10}/g, ' ')
+      .replace(/\d{1,2}[:：]\d{1,2}/g, ' ')
+      .replace(/(凌晨|早上|上午|中午|下午|晚上|晚间|夜里|晚|傍晚)?\d{1,2}点(半|\d{1,2}分)?/g, ' ');
+    const nums = new Set((stripped.match(/\d+(?:\.\d+)?/g) || []).map((n) => n.replace(/\.0+$/, '')));
+    return { phones, nums, times };
+  }
+
+  // 证据语料：知识库 + 最近买家/真人客服消息（排除 AI 自己，防止幻觉自我加强）
+  function buildEvidence(history, kb, classify) {
+    const parts = (kb || []).map(String);
+    for (const m of (history || []).slice(-30)) {
+      const role = classify ? classify(m) : (m.isFromMe ? 'staff' : 'buyer');
+      if (role === 'buyer' || role === 'staff') parts.push(String(m && m.content || ''));
+    }
+    return parts.join('\n');
+  }
+
+  // A 闸：线下行动承诺 + 金钱让步（此类承诺知识库不可能授权，一律拦）
+  const ACTION_FORBID = [
+    { re: /(送|拿|端|带|递)(给|到|上|去)(您|你)/, why: '线下送物承诺' },
+    { re: /(给|为)(您|你)(送|拿|端|带|递|准备)/, why: '线下送物承诺' },
+    { re: /(送到|拿到|端到|带到|递到|送至|送去)/, why: '线下送物承诺' },
+    { re: /(让|叫|安排)(人|师傅|小哥|同事|工作人员|阿姨|服务员).{0,4}去/, why: '派人去现场承诺' },
+    { re: /(已经|已|这就|马上|立刻|现在).{0,6}(帮您|给您|给你|为你|为您)?(订好|订了|预约好|预约了|预留|留好|登记好|备注好|安排好了)/, why: '虚构已完成的线下动作' },
+    { re: /退款|退钱|退您|退你|免单|赔偿|赔付|赔您|赔你/, why: '金钱让步承诺' },
+    { re: /(免费|白送|赠送).{0,4}(送|赠)/, why: '免费赠送承诺' },
+  ];
+
+  // 反幻觉主闸：返回 { ok, reason }  reason 仅供日志/事件定位
+  function antiHallucinationGate(reply, evidenceText) {
+    const text = String(reply || '');
+    if (!text) return { ok: true };
+    for (const { re, why } of ACTION_FORBID) {
+      if (re.test(text)) return { ok: false, reason: why };
+    }
+    const ev = String(evidenceText || '');
+    const evFacts = extractFacts(ev);
+    const rpFacts = extractFacts(text);
+    for (const p of rpFacts.phones) if (!evFacts.phones.has(p)) return { ok: false, reason: '编造电话:' + p };
+    for (const t of rpFacts.times) if (!evFacts.times.has(t)) return { ok: false, reason: '编造时间:' + t };
+    for (const n of rpFacts.nums) if (!evFacts.nums.has(n)) return { ok: false, reason: '编造数字:' + n };
+    return { ok: true };
+  }
+
+  // 拦截后的安全兜底：抱怨场景用安抚版（"反馈给店里"是事实——needsHuman 会真实推送店主），
+  // 普通场景用核实版。两者都不含任何具体承诺/数字，且都命中 needsHuman 语义。
+  const COMPLAINT_FALLBACK = '实在抱歉，您反馈的情况我都记下了，马上反馈给店里负责人核实处理。';
+  const GENERIC_FALLBACK = '这个我得帮您跟店里确认一下，确认好了马上回复您。';
+  const COMPLAINT_HINT = /投诉|差评|蚊子|虫|脏|乱|差|垃圾|气死|无语|失望|离谱|再也不|踩雷|难吃|太慢/;
+
   // ---- 决策：system + history + 最新用户消息 ----
   async function decide({ providerName = 'remote', message, history, profile, kb, classify }) {
     const p = Object.assign({}, DEFAULT_PROFILE, profile || {});
@@ -190,6 +305,7 @@
     sysParts.push(EMOTION_RULE);     // 固定情绪判断守则，始终生效
     sysParts.push(COMPLAINT_RULE);   // 固定吐槽应对守则，始终生效
     sysParts.push(NO_TILDE_RULE);    // 固定标点守则（禁波浪线），始终生效
+    sysParts.push(ANTI_FAB_RULE);    // 固定反编造铁律，始终生效（最高优先级）
 
     const messages = [
       { role: 'system', content: sysParts.join('\n\n') },
@@ -212,10 +328,19 @@
     }
     const trimmed = cleanReply(stripTag(reply));   // 防模型照抄角色标签 + 去 markdown 符号
     if (!trimmed) return null;
+    // 反幻觉硬闸：发送前最后校验。被拦 = 回复里有知识库/对话支撑不了的承诺或事实，
+    // 替换为安全兜底 + needsHuman（该会话静音等人工 + 店主收红角标/飞书提醒）
+    const gate = antiHallucinationGate(trimmed, buildEvidence(history, kb, classify));
+    if (!gate.ok) {
+      log('ANTI-HALLUCINATION BLOCKED [' + gate.reason + '] orig:', trimmed);
+      const lastBuyer = String((message && message.content) || '');
+      const fallback = COMPLAINT_HINT.test(lastBuyer) ? COMPLAINT_FALLBACK : GENERIC_FALLBACK;
+      return { reply: fallback, delay: humanDelay(p), conversationId: message && message.conversationId, needsHuman: true, blockedBy: 'anti-hallucination:' + gate.reason };
+    }
     return { reply: trimmed, delay: humanDelay(p), conversationId: message && message.conversationId, needsHuman: detectNeedsHuman(trimmed) };
   }
 
-  const api = { registerProvider, getProvider, decide, buildContext, humanDelay, detectNeedsHuman, DEFAULT_PROFILE };
+  const api = { registerProvider, getProvider, decide, buildContext, humanDelay, detectNeedsHuman, antiHallucinationGate, buildEvidence, DEFAULT_PROFILE };
   window.__llmEngine = api;
   log('ready; providers:', [...providers.keys()]);
   return api;
