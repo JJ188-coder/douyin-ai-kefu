@@ -291,5 +291,35 @@ console.assert(events27.includes('needs-human'), '❌ 吐槽信号应触发 need
 console.assert(!agent.isMuted('CONV14'), '❌ 吐槽提醒不应静音会话');
 console.log('✅ 27. 买家不满即时通知店主且不静音');
 
+// 28) 转办承诺上报（2026-08-20 事故回归："稍后让同事加您VX"说出去没人落实）：
+//     AI 回复含转办承诺 → 回复照发 + needs-human(kind=followup) + 不静音；30 分钟内同会话不重复提醒
+const llmSrc28 = readFileSync(new URL('../core/llm-engine.js', import.meta.url), 'utf8');
+const tmpWin28 = { location: { origin: 'https://life.douyin.com' } };
+new Function('window', llmSrc28)(tmpWin28);   // 只取真实 detectFollowup（decide 仍用桩，不走网络）
+const engineBefore28 = globalThis.window.__llmEngine;
+globalThis.window.__llmEngine = {
+  decide: async () => ({ reply: '好的，这是您的号码对吧？我记下了，稍后让同事加您VX联系您哦', delay: 0, needsHuman: false }),
+  detectFollowup: tmpWin28.__llmEngine.detectFollowup,
+};
+const events28 = [];
+const sentBefore28 = sent.length;
+const origEmit28 = bridge.emit;
+bridge.emit = (ch, d) => { events28.push({ ch, d }); };
+onMsg({ clientId: 'FU-1', content: '我的电话是13812345678，让你们人联系我', isFromMe: false, senderRole: '1', conversationId: 'CONV15', pigeonMsgType: 'text', timestamp: Date.now() });
+await sleep(600);
+console.assert(sent.length === sentBefore28 + 1 && sent[sent.length - 1].content.includes('加您VX'), '❌ 转办承诺回复应照发, sent=' + JSON.stringify(sent[sent.length - 1]));
+const fuEvt = events28.find(e => e.ch === 'needs-human');
+console.assert(fuEvt && fuEvt.d && fuEvt.d.kind === 'followup', '❌ 转办承诺应触发 needs-human(kind=followup), 实际: ' + JSON.stringify(events28));
+console.assert(!agent.isMuted('CONV15'), '❌ 转办承诺不应静音会话（AI 继续接待）');
+// 冷却：同会话 30 分钟内第二条承诺不再重复提醒
+events28.length = 0;
+onMsg({ clientId: 'FU-2', content: '好，那你们加我', isFromMe: false, senderRole: '1', conversationId: 'CONV15', pigeonMsgType: 'text', timestamp: Date.now() });
+await sleep(600);
+console.assert(!events28.some(e => e.ch === 'needs-human'), '❌ 30 分钟冷却期内不应重复提醒');
+bridge.emit = origEmit28;
+globalThis.window.__llmEngine = engineBefore28;
+if (!fuEvt || events28.some(e => e.ch === 'needs-human')) { console.log('❌ FAILED: 28 转办承诺'); process.exit(1); }
+console.log('✅ 28. 转办承诺照发 + kind=followup 上报 + 不静音 + 冷却');
+
 console.log('ALL PASS');
 process.exit(0);

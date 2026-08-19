@@ -47,6 +47,7 @@
     // 语义：买家在平台机器人阶段积压的问题，AI 接管后处理的第一条买家消息里集中一段答完；
     // 之后买家再发的新消息恢复对话式逐条回复。consolidated 标记保证只集中一次。
     handoverByConv: new Map(), // convKey -> { at: 接管时间, consolidated: 是否已集中回复过 }
+    followupNotified: new Map(), // convKey -> ts 转办承诺已提醒时间（30 分钟冷却，防刷屏）
   };
 
   const DEFAULT_PER_TURN = 3; // 每个"消费者一条消息"回合，最多自动回复条数
@@ -411,6 +412,17 @@
         muteConv(conv, Infinity, 'AI 答不了，已通知你处理');
         const { b: bb0 } = deps();
         bb0.emit('needs-human', { conversationId: conv, buyerText: text, reply: decision.reply });
+      } else if (l.detectFollowup && l.detectFollowup(decision.reply)) {
+        // ---- 转办承诺上报：AI 答了，但承诺了要人办的事（加VX/回电/专员对接/反馈核实）----
+        // 回复已发出，这里推飞书+红角标提醒店主真的去落实，否则承诺空转买家干等。
+        // 不静音（AI 继续接待）；同一会话 30 分钟内只提醒一次，防连续承诺刷屏。
+        const nowTs = Date.now();
+        if ((state.followupNotified.get(ckey) || 0) < nowTs - 30 * 60 * 1000) {
+          state.followupNotified.set(ckey, nowTs);
+          const { b: bf } = deps();
+          bf.emit('needs-human', { conversationId: conv, buyerText: text, reply: decision.reply, kind: 'followup' });
+          log('followup promise notified:', conv, decision.reply.slice(0, 40));
+        }
       }
     } finally {
       state.sendLock.delete(ckey);

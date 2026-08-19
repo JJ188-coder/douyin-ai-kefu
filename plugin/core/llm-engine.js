@@ -113,8 +113,9 @@
     '1) 绝不承诺任何线下具体动作：禁止"给您送/拿/端/带/递""送到您桌上/位置上""我马上让人去处理/叫人过去"' +
     '“已经帮您订好/预约好/预留/留好/登记/备注好”；安抚只能说“我记下了，马上反馈给店里核实处理”；' +
     '2) 绝不主动承诺钱相关让步：退款、赔偿、免单、赠送、折扣一律不许说，买家要求时回"我帮您向店里申请确认一下"；' +
-    '3) 具体事实（电话、价格、时间、地址、任何数字）只能用知识库里明写的或买家自己说过的；' +
-    '知识库没有的一律回"帮您确认一下"，绝不现编。拿不准就当你不知道。';
+    '3) 知识库里明写的或买家自己说过的事实（价格、时间、电话、数字），直接自信照答，不要犹豫、不要过度谦逊——' +
+    '这些不算编造；由知识库数字简单算出的合计/差价也可以答（如套餐价加单人票的总价）；' +
+    '只有两边都没有、也算不出来的，才回"帮您确认一下"，绝不现编。';
 
   // ---- 情绪判断规则：先看买家脸色再开口 ----
   // 生产事故（2026-08-19）：买家明显带着气来（吐槽蚊子、设施），模型还在开玩笑式接话。
@@ -185,6 +186,15 @@
     return NEEDS_HUMAN_RE.test(String(reply || ''));
   }
 
+  // ---- 转办承诺检测：AI 回复里承诺了"要人办的事"（加VX/专员对接/回电/反馈核实）----
+  // 2026-08-20 事故：AI 回"稍后让同事加您VX联系您哦"，回复发出去了但店主不知道要去加——承诺空转。
+  // 命中语义：回复照发不误，同时推飞书+红角标提醒店主真的去办（不静音，AI 继续接待）。
+  // 与 needsHuman 的区别：needsHuman = AI 答不了要人接；转办 = AI 答了但承诺了线下动作要人落实。
+  const FOLLOWUP_RE = /加(您|你|下|您的|你的)?.{0,6}(VX|vx|微信)|专员.{0,8}(对接|联系)|(让|叫|安排).{0,6}(同事|专员|负责人|店里).{0,8}(加|联系|对接|回电)|给(您|你)回(电|电话)|回(电|电话)给(您|你)|稍后.{0,8}(联系|加)(您|你)|反馈给(店里|负责人)/;
+  function detectFollowup(reply) {
+    return FOLLOWUP_RE.test(String(reply || ''));
+  }
+
   // ==================== 反幻觉门禁（发送前的程序闸）====================
   // 背景（2026-08-19 幻觉事故）：prompt 写得再狠，模型仍会"顺着买家说"——
   // 虚构"给您拿药膏送到10号桌"这种线下服务承诺。prompt 是软约束，这里是硬闸门：
@@ -197,10 +207,12 @@
   //      「知识库 + 买家/真人客服说过的话」里找到出处，找不到即编造，拦截。
   //      证据刻意排除 AI 自己说过的（防止幻觉自我循环加强）。
 
-  // 中文数字 → 阿拉伯数字（覆盖客服对话常见写法，含"十X/X十/两"）
+  // 中文数字 → 阿拉伯数字：只在「数字+量词/单位」语境转换（八点→8点、两位→2位）。
+  // 绝不能全局替换——"一下/一会儿/一起"里的"一"不是数字，全局转会把正常话术误杀（0.3.9 教训）。
+  const CN_NUM_BEFORE_UNIT = /[零〇一二两三四五六七八九十]{1,3}(?=[点元块位个人名张间条份只支天号岁折米里分两钟小半])/g;
   function cn2num(s) {
     const map = { 零: 0, 〇: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
-    return String(s || '').replace(/[零〇一二两三四五六七八九十]{1,3}/g, (w) => {
+    return String(s || '').replace(CN_NUM_BEFORE_UNIT, (w) => {
       if (w === '十') return '10';
       const t = w.indexOf('十');
       if (t === 0) return '1' + (map[w[1]] != null ? map[w[1]] : '');        // 十X → 1X
@@ -213,12 +225,17 @@
     });
   }
 
+  // 冒号时间必须「像时间」：左侧不能紧跟数字/¥（否则全角冒号"¥158：4人"会被啃成 58:4 —— 0.3.9 误杀事故），
+  // 分钟固定两位（"9:30"是时间，"158：4"不是）。
+  const COLON_TIME_RE = /(?<![\d¥$.])(\d{1,2})[:：](\d{2})(?!\d)/g;
+  const DIAN_TIME_RE = /(凌晨|早上|上午|中午|下午|晚上|晚间|夜里|晚|傍晚)?(\d{1,2})点(半|\d{1,2}分)?/g;
+
   // 时间表达式归一化为 H:MM（"晚上8点"→"20:00"，"9点半"→"9:30"），供跨写法比对
   function extractTimes(text) {
     const s = cn2num(text);
     const out = new Set();
-    for (const m of s.matchAll(/(\d{1,2})[:：](\d{1,2})/g)) out.add(Number(m[1]) + ':' + m[2].padStart(2, '0'));
-    for (const m of s.matchAll(/(凌晨|早上|上午|中午|下午|晚上|晚间|夜里|晚|傍晚)?(\d{1,2})点(半|\d{1,2}分)?/g)) {
+    for (const m of s.matchAll(new RegExp(COLON_TIME_RE.source, 'g'))) out.add(Number(m[1]) + ':' + m[2]);
+    for (const m of s.matchAll(new RegExp(DIAN_TIME_RE.source, 'g'))) {
       let h = Number(m[2]);
       let mm = '00';
       if (m[3] === '半') mm = '30';
@@ -229,19 +246,52 @@
     return out;
   }
 
-  // 抽取事实：电话 / 数字（价格数量等一律按裸数字核对） / 时间
+  // 抽取事实：电话 / 金额（带 元/块/¥ 或小数的数，核对最严） / 裸数字（数量类） / 时间
   function extractFacts(text) {
     const s = cn2num(text);
     const phones = new Set(s.match(/1\d{10}/g) || []);
     const times = extractTimes(s);
+    const money = new Set();
+    for (const m of s.matchAll(/(\d+(?:\.\d+)?)\s*(?:元|块)/g)) money.add(m[1].replace(/\.0+$/, ''));
+    for (const m of s.matchAll(/[¥￥]\s*(\d+(?:\.\d+)?)/g)) money.add(m[1].replace(/\.0+$/, ''));
+    for (const m of s.matchAll(/\d+\.\d+/g)) money.add(m[0].replace(/\.0+$/, ''));   // 小数几乎都是价格
     // 裸数字核对前先把时间表达式和电话剥掉——它们已由各自专项核对负责，
     // 否则"晚上8点"里的 8、"9:30"里的 9/30 会被当成独立数字误伤
     const stripped = s
       .replace(/1\d{10}/g, ' ')
-      .replace(/\d{1,2}[:：]\d{1,2}/g, ' ')
-      .replace(/(凌晨|早上|上午|中午|下午|晚上|晚间|夜里|晚|傍晚)?\d{1,2}点(半|\d{1,2}分)?/g, ' ');
+      .replace(new RegExp(COLON_TIME_RE.source, 'g'), ' ')
+      .replace(new RegExp(DIAN_TIME_RE.source, 'g'), ' ');
     const nums = new Set((stripped.match(/\d+(?:\.\d+)?/g) || []).map((n) => n.replace(/\.0+$/, '')));
-    return { phones, nums, times };
+    return { phones, nums, money, times };
+  }
+
+  // 合计推导：目标数是否等于 ≤8 个证据金额的求和（可重复取用，即含倍数）——按分做背包 DP。
+  // 如买家问"一共多少"：388 套餐 + 5×29.9 单人票 = 537.5，是知识库算出来的，不是编造。
+  // 只放行 2000 元以内；超出的多半是大额团建，按存疑转人工反而合适。
+  function isDerivedNumber(n, coinNums) {
+    const target = Math.round(Number(n) * 100);
+    if (!Number.isFinite(target) || target <= 0 || target > 200000) return false;
+    const coins = [...coinNums].map((x) => Math.round(Number(x) * 100)).filter((c) => Number.isFinite(c) && c > 0 && c <= target);
+    if (!coins.length) return false;
+    const dp = new Uint8Array(target + 1).fill(255);
+    dp[0] = 0;
+    for (let i = 1; i <= target; i++) {
+      let best = 255;
+      for (const c of coins) if (i >= c && dp[i - c] < best) best = dp[i - c] + 1;
+      dp[i] = best;
+    }
+    return dp[target] <= 8;
+  }
+
+  // 证据裸数字的「差值表」：数量类小数字常由对话推出（15 人 - 10 人套餐 = 补 5 张票）
+  function buildDiffSet(evNums) {
+    const arr = [...evNums].map(Number).filter((x) => Number.isFinite(x));
+    const out = new Set();
+    for (const a of arr) for (const b of arr) {
+      const d = Math.abs(a - b);
+      if (d > 0 && Number.isInteger(d)) out.add(String(d));
+    }
+    return out;
   }
 
   // 证据语料：知识库 + 最近买家/真人客服消息（排除 AI 自己，防止幻觉自我加强）
@@ -277,7 +327,16 @@
     const rpFacts = extractFacts(text);
     for (const p of rpFacts.phones) if (!evFacts.phones.has(p)) return { ok: false, reason: '编造电话:' + p };
     for (const t of rpFacts.times) if (!evFacts.times.has(t)) return { ok: false, reason: '编造时间:' + t };
-    for (const n of rpFacts.nums) if (!evFacts.nums.has(n)) return { ok: false, reason: '编造数字:' + n };
+    // 金额（元/块/¥/小数）：必须知识库/对话里有，或能由证据金额求和推出（合计场景）
+    for (const n of rpFacts.money) {
+      if (!evFacts.money.has(n) && !isDerivedNumber(n, evFacts.money)) return { ok: false, reason: '编造金额:' + n };
+    }
+    // 裸数字（数量类）：出处可以是证据原文、证据两数之差（15人-10人套餐=补5张）、或求和推导
+    const diffSet = buildDiffSet(evFacts.nums);
+    for (const n of rpFacts.nums) {
+      if (rpFacts.money.has(n)) continue;   // 已按金额严检过
+      if (!evFacts.nums.has(n) && !diffSet.has(n) && !isDerivedNumber(n, evFacts.nums)) return { ok: false, reason: '编造数字:' + n };
+    }
     return { ok: true };
   }
 
@@ -340,7 +399,7 @@
     return { reply: trimmed, delay: humanDelay(p), conversationId: message && message.conversationId, needsHuman: detectNeedsHuman(trimmed) };
   }
 
-  const api = { registerProvider, getProvider, decide, buildContext, humanDelay, detectNeedsHuman, antiHallucinationGate, buildEvidence, DEFAULT_PROFILE };
+  const api = { registerProvider, getProvider, decide, buildContext, humanDelay, detectNeedsHuman, detectFollowup, antiHallucinationGate, buildEvidence, DEFAULT_PROFILE };
   window.__llmEngine = api;
   log('ready; providers:', [...providers.keys()]);
   return api;

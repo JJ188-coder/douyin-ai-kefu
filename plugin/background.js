@@ -125,12 +125,14 @@ async function feishuSend(text) {
 }
 
 async function handleNeedsHuman(p) {
+  const isFollowup = p && p.kind === 'followup';   // 转办承诺：AI 答了但承诺了要人办的事；区别于"答不了"
   const item = {
     id: Date.now() + '_' + Math.random().toString(36).slice(2, 8),
     t: Date.now(),
     conv: String(p.conversationId || ''),
     buyer: String(p.buyerText || '').slice(0, 200),
     reply: String(p.reply || '').slice(0, 200),
+    kind: isFollowup ? 'followup' : 'human',
     done: false,
   };
   const r = await chrome.storage.local.get('pendingHuman');
@@ -143,7 +145,7 @@ async function handleNeedsHuman(p) {
     chrome.notifications.create('nh_' + item.id, {
       type: 'basic',
       iconUrl: 'icons/icon128.png',
-      title: '抖音客服：有买家问题需要人工处理',
+      title: isFollowup ? '抖音客服：AI 向买家承诺了事，需要你落实' : '抖音客服：有买家问题需要人工处理',
       message: '买家：' + item.buyer,
       priority: 2,
       silent: true,
@@ -151,12 +153,17 @@ async function handleNeedsHuman(p) {
   } catch (e) { /* 通知不可用时静默 */ }
   // 飞书推送
   const time = new Date(item.t).toLocaleString('zh-CN', { hour12: false });
-  feishuSend(
-    '🔔 抖音客服·需要人工介入\n' +
-    '买家：' + item.buyer + '\n' +
-    'AI 已兜底回复：' + item.reply + '\n' +
-    '时间：' + time + '\n' +
-    '请到客服台处理（该会话已自动静音 15 分钟，你发消息即接管）'
+  feishuSend(isFollowup
+    ? '📌 抖音客服·承诺转办\n' +
+      '买家：' + item.buyer + '\n' +
+      'AI 已回复：' + item.reply + '\n' +
+      '时间：' + time + '\n' +
+      'AI 已向买家承诺了要人办的事（加 VX/回电/专员对接/核实等），请按承诺跟进落实；该会话 AI 仍在正常接待。'
+    : '🔔 抖音客服·需要人工介入\n' +
+      '买家：' + item.buyer + '\n' +
+      'AI 已兜底回复：' + item.reply + '\n' +
+      '时间：' + time + '\n' +
+      '请到客服台处理（该会话已自动静音 15 分钟，你发消息即接管）'
   ).then((res) => { if (!res.ok) console.warn('[background] 飞书推送失败:', res.error); });
 }
 
