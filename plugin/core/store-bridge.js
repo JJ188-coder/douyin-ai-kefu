@@ -124,7 +124,7 @@
       return 'buyer';
     }
     if (msg.isFromMe === true) {
-      return isSent(msg.content) ? 'aiSelf' : 'staff';
+      return (isSent(msg.content) || isSentClientId(msg.clientId)) ? 'aiSelf' : 'staff';
     }
     return 'system';
   }
@@ -195,14 +195,18 @@
         if (!msg.isFromMe) {
           emit('message', item);
           if (typeof onMessage === 'function') onMessage(item);
-        } else if (String(msg.content || '').trim() && !isSent(msg.content)) {
-          // 人工客服本人在发消息（排除 AI 自己发的）→ 派发人工活动，agent 据此静音防抢答
-          if (msg.senderRole === '4') return;                        // 平台智能客服/系统发言不是真人打字，不静音
-          const ts = msg.createTime || 0;
-          if (ts && ts < listenAt - 3000) return;                 // 历史重推（重载/重连后 SDK 重放）不算人工活动
-          if (SYS_STAFF_RE.test(String(msg.content).trim())) return; // 系统提示/自动欢迎语不算人工打字
-          emit('staff-activity', item);
-          if (typeof onStaff === 'function') onStaff(item);
+        } else if (String(msg.content || '').trim()) {
+          if (isSent(msg.content)) {
+            learnSentClientId(msg.clientId);   // 内容指纹新鲜时学到 clientId，之后这条消息重推永久认得
+          } else if (!isSentClientId(msg.clientId)) {
+            // 人工客服本人在发消息（排除 AI 自己发的）→ 派发人工活动，agent 据此静音防抢答
+            if (msg.senderRole === '4') return;                        // 平台智能客服/系统发言不是真人打字，不静音
+            const ts = msg.createTime || 0;
+            if (ts && ts < listenAt - 3000) return;                 // 历史重推（重载/重连后 SDK 重放）不算人工活动
+            if (SYS_STAFF_RE.test(String(msg.content).trim())) return; // 系统提示/自动欢迎语不算人工打字
+            emit('staff-activity', item);
+            if (typeof onStaff === 'function') onStaff(item);
+          }
         }
       } catch (e) {
         console.error('[store-bridge] onMessage fail', e);
@@ -225,18 +229,30 @@
   }
 
   // ---- 8. 防回环：标记「这条消息是我发的」 ----
+  // 内容指纹不带过期时间（原来 30 分钟过期后，SDK 因已读回执/重连重推 AI 自己的回复，
+  // isSent 失配被误判成人工发言 → 误静音会话），改用容量上限控制内存；
+  // clientId 指纹：回推到达且内容匹配时学到，之后这条消息无论过多久重推都能认出是自己发的。
   const sentMemory = new Set();
+  const sentClientIds = new Set();
+  const capSet = (set, max) => { while (set.size > max) set.delete(set.values().next().value); };
   function rememberSent(content) {
-    const key = String(content || '').slice(0, 200);
-    sentMemory.add(key);
-    setTimeout(() => sentMemory.delete(key), 1000 * 60 * 30);
+    sentMemory.add(String(content || '').slice(0, 200));
+    capSet(sentMemory, 2000);
   }
   function isSent(content) {
-    const key = String(content || '').slice(0, 200);
-    return sentMemory.has(key);
+    return sentMemory.has(String(content || '').slice(0, 200));
+  }
+  function learnSentClientId(id) {
+    if (!id) return;
+    sentClientIds.add(id);
+    capSet(sentClientIds, 5000);
+  }
+  function isSentClientId(id) {
+    return !!id && sentClientIds.has(id);
   }
   function clearSent() {
     sentMemory.clear();
+    sentClientIds.clear();
   }
 
   // ---- 导出到 window ----
@@ -254,6 +270,7 @@
     snap,
     rememberSent,
     isSent,
+    isSentClientId,
     clearSent,
   };
   window.__storeBridge = api;

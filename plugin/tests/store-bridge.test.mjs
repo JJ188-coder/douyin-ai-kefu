@@ -69,5 +69,26 @@ console.assert(bridge.classifyMessage({ isFromMe: true, senderRole: '2', content
 console.assert(bridge.classifyMessage({ isFromMe: false, senderRole: '1', content: '在吗', pigeonMsgType: 'text' }) === 'buyer', '❌ 买家应分类 buyer');
 console.log('✅ 8. 角色分类：买家/平台AI/我们的AI/真人客服 四类正确');
 
+// 9) 回归（2026-08-19 生产事故）：AI 回复 30 分钟后被 SDK 重推（已读回执/重连），
+//    旧代码内容指纹 30min 过期 → isSent 失配 → 误判人工发言 → 误静音会话漏回买家。
+//    修复后：发送回执到达时学到 clientId，重推凭 clientId 永久免疫，不再派发人工活动。
+const staffBefore9 = staffEvents.length;
+bridge.rememberSent('调料都含在套餐里的哈');
+fire({ clientId: 'echo-9', content: '调料都含在套餐里的哈', isFromMe: true, senderRole: '2', bizConversationId: 'C1', pigeonMsgType: 'text', createTime: NOW });
+console.assert(staffEvents.length === staffBefore9, '❌ 发送回执不应派发人工活动');
+console.assert(bridge.isSentClientId('echo-9'), '❌ 回执到达后应学到 clientId');
+// 模拟"很久之后"的同一条重推：即使内容对不上（极端情况），凭 clientId 也不误判人工
+fire({ clientId: 'echo-9', content: '调料都含在套餐里的哈', isFromMe: true, senderRole: '2', bizConversationId: 'C1', pigeonMsgType: 'text', createTime: NOW + 3600000 });
+fire({ clientId: 'echo-9', content: '调料都含在套餐里的哈（平台改了一个字符）', isFromMe: true, senderRole: '2', bizConversationId: 'C1', pigeonMsgType: 'text', createTime: NOW + 3600001 });
+console.assert(staffEvents.length === staffBefore9, '❌ 学过 clientId 的重推不应误判人工（模拟 TTL 过期事故）');
+console.assert(bridge.classifyMessage({ isFromMe: true, senderRole: '2', content: '别的内容', clientId: 'echo-9', pigeonMsgType: 'text' }) === 'aiSelf', '❌ clientId 命中应分类 aiSelf');
+console.log('✅ 9. clientId 免疫重推：过期/变体重推不再误判人工, events =', staffEvents.length);
+
+// 10) 没学过 clientId 的真人发言重推 → 仍然正常派发（不误伤人工接管检测）
+const staffBefore10 = staffEvents.length;
+fire({ clientId: 'human-10', content: '人工晚班接手了', isFromMe: true, senderRole: '2', bizConversationId: 'C1', pigeonMsgType: 'text', createTime: NOW });
+console.assert(staffEvents.length === staffBefore10 + 2, '❌ 真人实时发言应正常派发, 实际新增 ' + (staffEvents.length - staffBefore10));
+console.log('✅ 10. 真人发言不受影响, events =', staffEvents.length);
+
 console.log('ALL PASS');
 process.exit(0);
