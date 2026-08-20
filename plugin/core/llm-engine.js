@@ -26,7 +26,7 @@
   // ---- 真实供应商：走 background 的 OpenAI 兼容 chat ----
   // 消息从 MAIN world postMessage 给 ISOLATED host-bridge，再由其转 chrome.runtime → background。
   registerProvider('remote', {
-    chat: async (messages) => {
+    chat: async (messages, options) => {
       return await new Promise((resolve, reject) => {
         // 请求编号：并发会话各自只认自己的回复，否则先回来的回复会被所有等待者同时拿走（内容串台）
         const reqId = 'r' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -45,7 +45,7 @@
         }, 45000);   // 正常回复 5-20s；45s 不响应判定挂死，交给上层重试，别让买家干等
         window.addEventListener('message', onReply);
         window.postMessage(
-          { __aics: 'llm-req', reqId, payload: { messages } },
+          { __aics: 'llm-req', reqId, payload: { messages, options: options || {} } },
           window.location.origin
         );
       });
@@ -371,10 +371,14 @@
       { role: 'system', content: sysParts.join('\n\n') },
       ...buildContext(history || [], classify),
     ];
-    // 确保最后一条是用户消息（拿不到的兜底）
+    // 确保最后一条是"当前买家消息"：历史可能已以 user 结尾，但 agent 传进来的可能是合并后的 askText，
+    // 只看 role 会把这条真正要问模型的内容丢掉（表现为回复的是历史旧句，不是最新问题）。
     const lastUser = String((message && message.content) || '');
-    if (messages.length === 0 || (messages[messages.length-1].role !== 'user')) {
-      messages.push({ role: 'user', content: lastUser });
+    if (lastUser) {
+      const lastCtx = messages[messages.length - 1];
+      if (!lastCtx || lastCtx.role !== 'user' || String(lastCtx.content || '') !== lastUser) {
+        messages.push({ role: 'user', content: lastUser });
+      }
     }
 
     // 供应商限速/网络抖动时隔 2 秒重试一次；再失败才抛给上层记事件日志

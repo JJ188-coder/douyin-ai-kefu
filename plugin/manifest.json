@@ -10,7 +10,15 @@
   ],
   "host_permissions": [
     "https://*.douyin.com/*",
-    "https://open.feishu.cn/*"
+    "https://open.feishu.cn/*",
+    "https://api.openai.com/*",
+    "https://api.deepseek.com/*",
+    "https://api.moonshot.cn/*",
+    "https://open.bigmodel.cn/*",
+    "https://dashscope.aliyuncs.com/*",
+    "https://ark.cn-beijing.volces.com/*",
+    "https://api.siliconflow.cn/*",
+    "https://openrouter.ai/*"
   ],
   "background": {
     "service_worker": "background.js"

@@ -2,6 +2,7 @@
 // 背景：2026-08-19 买家吐槽蚊子，AI 回"给您拿点药膏""送到10号桌"——虚构线下承诺，买家真在等。
 // 门禁 = prompt 软约束（反编造铁律）+ 程序硬闸（行动承诺闸 + 事实核对闸，证据排除 AI 自己）。
 import { readFileSync } from 'fs';
+import assert from 'node:assert/strict';
 
 const engineSrc = readFileSync(new URL('../core/llm-engine.js', import.meta.url), 'utf8');
 const realWindow = globalThis.window;
@@ -33,9 +34,8 @@ async function run(replyText, msg, history = [], kb = KB) {
 let n = 0;
 function check(cond, label, extra) {
   n++;
-  console.assert(cond, '❌ ' + label + (extra ? ' | ' + extra : ''));
-  if (cond) console.log('✅ ' + n + '. ' + label + (extra ? ' | ' + extra : ''));
-  else { console.log('❌ FAILED: ' + label, extra || ''); process.exit(1); }
+  assert.ok(cond, '❌ ' + label + (extra ? ' | ' + extra : ''));
+  console.log('✅ ' + n + '. ' + label + (extra ? ' | ' + extra : ''));
 }
 
 // 1) 幻觉事故原样复现：买家吐槽蚊子，模型回"我给您拿点药膏先涂上" → 拦截 + 安抚兜底 + needsHuman
@@ -144,4 +144,3 @@ check(F('我让同事加您VX，您通过一下') === true, '同事去加买家 
 
 globalThis.window = realWindow;
 console.log('ALL PASS');
-process.exit(0);

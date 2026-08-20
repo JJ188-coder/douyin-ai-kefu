@@ -124,7 +124,8 @@
       return 'buyer';
     }
     if (msg.isFromMe === true) {
-      return (isSent(msg.content) || isSentClientId(msg.clientId)) ? 'aiSelf' : 'staff';
+      const convId = msg.bizConversationId || msg.conversationId || msg.convId || '';
+      return (isSent(msg.content, convId) || isSentClientId(msg.clientId)) ? 'aiSelf' : 'staff';
     }
     return 'system';
   }
@@ -139,9 +140,11 @@
       ? cs._conversationStore.totalContacts.get(conversationId)
       : null;
     if (!conv) return false;
+    // 只接管"当前接待中"的会话；history 列表里的会话不算 live，否则刷新/切换列表会把历史买家消息也接管回复
+    if (conv.type === 'history') return false;
     const closed = !!(conv.rawConversation && conv.rawConversation.closed) || conv.closed === true;
     if (closed) return false;
-    return true; // 无论 type=current/history 只要未关闭即视为可接管
+    return true; // 仅 current/进行中会话视为可接管（history 已在上面排除）
   }
 
   // ---- 6. 判断「这个会话是否已转人工 / 值得接管」 ----
@@ -235,12 +238,21 @@
   const sentMemory = new Set();
   const sentClientIds = new Set();
   const capSet = (set, max) => { while (set.size > max) set.delete(set.values().next().value); };
-  function rememberSent(content) {
-    sentMemory.add(String(content || '').slice(0, 200));
+  const sentKey = (content, conv) => String(conv || '') + '|' + String(content || '').slice(0, 200);
+  // 兼容旧调用：rememberSent(content) / isSent(content) 按全局匹配；新代码用 (conv, content) / (content, conv) 按会话隔离
+  function rememberSent(conv, content) {
+    if (content === undefined) { content = conv; conv = ''; }
+    sentMemory.add(sentKey(content, conv));
     capSet(sentMemory, 2000);
   }
-  function isSent(content) {
-    return sentMemory.has(String(content || '').slice(0, 200));
+  function isSent(content, conv) {
+    const key = String(content || '').slice(0, 200);
+    return sentMemory.has(sentKey(key, conv)) || sentMemory.has(sentKey(key, ''));
+  }
+  function forgetSent(conv, content) {
+    if (content === undefined) { content = conv; conv = ''; }
+    sentMemory.delete(sentKey(content, conv));
+    if (conv) sentMemory.delete(sentKey(content, ''));
   }
   function learnSentClientId(id) {
     if (!id) return;
@@ -270,6 +282,7 @@
     snap,
     rememberSent,
     isSent,
+    forgetSent,
     isSentClientId,
     clearSent,
   };

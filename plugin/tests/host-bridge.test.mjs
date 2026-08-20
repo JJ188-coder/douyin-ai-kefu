@@ -1,6 +1,7 @@
 // host-bridge.js chatlog 落盘去重自测（node 直跑，mock chrome.storage + window 消息桥）
 // 覆盖：1) 刷新 backfill 重复推送只落盘一次  2) 不同消息正常落盘  3) 真实重发同内容（不同时间）不去重
 import { readFileSync } from 'fs';
+import assert from 'node:assert/strict';
 
 const src = readFileSync(new URL('../host-bridge.js', import.meta.url), 'utf8');
 
@@ -27,21 +28,20 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const hist = { t: '2026-08-18T10:00:00.000Z', conv: 'c1', who: 'buyer', text: '周末有位置吗' };
 pushChat(hist); pushChat(hist); pushChat(hist);
 await sleep(300);
-console.assert((store.chatlog || []).length === 1, '❌ backfill 重复消息应只落盘一次, 实际 ' + (store.chatlog || []).length);
+assert.equal((store.chatlog || []).length, 1, '❌ backfill 重复消息应只落盘一次, 实际 ' + (store.chatlog || []).length);
 console.log('✅ 1. backfill 重推去重, chatlog =', store.chatlog.length);
 
 // 2) 不同内容的消息 → 正常落盘
 pushChat({ t: '2026-08-18T10:01:00.000Z', conv: 'c1', who: 'ai', text: '有的，您几位呢～' });
 await sleep(300);
-console.assert(store.chatlog.length === 2, '❌ 新消息应正常落盘, 实际 ' + store.chatlog.length);
+assert.equal(store.chatlog.length, 2, '❌ 新消息应正常落盘, 实际 ' + store.chatlog.length);
 console.log('✅ 2. 新消息正常落盘, chatlog =', store.chatlog.length);
 
 // 3) 真实场景：买家不同时间发了两次一模一样的"在吗"（t 不同）→ 不能误去重
 pushChat({ t: '2026-08-18T11:00:00.000Z', conv: 'c2', who: 'buyer', text: '在吗' });
 pushChat({ t: '2026-08-18T11:05:00.000Z', conv: 'c2', who: 'buyer', text: '在吗' });
 await sleep(300);
-console.assert(store.chatlog.length === 4, '❌ 不同时间的同内容消息不应去重, 实际 ' + store.chatlog.length);
+assert.equal(store.chatlog.length, 4, '❌ 不同时间的同内容消息不应去重, 实际 ' + store.chatlog.length);
 console.log('✅ 3. 真实重发不误伤, chatlog =', store.chatlog.length);
 
 console.log('ALL PASS');
-process.exit(0);

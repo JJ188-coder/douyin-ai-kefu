@@ -28,12 +28,14 @@ async function cfg() {
 }
 
 // ---- LLM chat（OpenAI 兼容）----
-async function chat({ model, apiKey, apiBase, temperature, messages }) {
+async function chat({ model, apiKey, apiBase, temperature, messages, maxTokens }) {
   const body = {
     model,
     temperature: Number(temperature) || 0.9,
     messages,
   };
+  const maxTok = Number(maxTokens);
+  if (Number.isFinite(maxTok) && maxTok > 0) body.max_tokens = maxTok;
   let resp;
   try {
     resp = await fetch(`${apiBase}/chat/completions`, {
@@ -75,6 +77,20 @@ async function updateBadge() {
   const n = (Array.isArray(r.pendingHuman) ? r.pendingHuman : []).filter((x) => !x.done).length;
   await chrome.action.setBadgeBackgroundColor({ color: '#f53f3f' });
   await chrome.action.setBadgeText({ text: n ? String(n) : '' });
+}
+
+// pendingHuman 的 get→改→set 串行化：needs-human 事件可能并发/重发，
+// 不串行会出现读旧数组互相覆盖、待处理重复、角标不准。
+let pendingQueue = Promise.resolve();
+function withPendingHuman(fn) {
+  pendingQueue = pendingQueue.then(async () => {
+    const r = await chrome.storage.local.get('pendingHuman');
+    const arr = Array.isArray(r.pendingHuman) ? r.pendingHuman : [];
+    const next = await fn(arr);
+    if (next !== arr) await chrome.storage.local.set({ pendingHuman: next });
+    return next;
+  });
+  return pendingQueue;
 }
 
 // ---- 飞书通知：支持「群自定义机器人 webhook」或「开放平台自建应用 API」两种方式 ----
@@ -126,20 +142,25 @@ async function feishuSend(text) {
 
 async function handleNeedsHuman(p) {
   const isFollowup = p && p.kind === 'followup';   // 转办承诺：AI 答了但承诺了要人办的事；区别于"答不了"
+  const now = Date.now();
   const item = {
-    id: Date.now() + '_' + Math.random().toString(36).slice(2, 8),
-    t: Date.now(),
+    id: now + '_' + Math.random().toString(36).slice(2, 8),
+    t: now,
     conv: String(p.conversationId || ''),
     buyer: String(p.buyerText || '').slice(0, 200),
     reply: String(p.reply || '').slice(0, 200),
     kind: isFollowup ? 'followup' : 'human',
     done: false,
   };
-  const r = await chrome.storage.local.get('pendingHuman');
-  const arr = Array.isArray(r.pendingHuman) ? r.pendingHuman : [];
-  arr.push(item);
-  await chrome.storage.local.set({ pendingHuman: arr.slice(-50) });
-  updateBadge();
+  // 同会话同买家话术 10 分钟冷却内不重复提醒（SDK 重推/连发合并可能反复触发同一 needs-human）
+  const COOLDOWN_MS = 10 * 60 * 1000;
+  const added = await withPendingHuman((arr) => {
+    const hit = arr.find((x) => !x.done && x.conv === item.conv && x.buyer === item.buyer && (now - (Number(x.t) || 0)) < COOLDOWN_MS);
+    if (hit) return arr;
+    return arr.concat(item).slice(-50);
+  });
+  if (added.length && added[added.length - 1].id === item.id) updateBadge();
+  else return;
   // 桌面通知（静默模式：只弹横幅不响铃，声音提醒走飞书手机端；macOS 需在系统设置允许 Chrome 通知；失败不影响角标/飞书）
   try {
     chrome.notifications.create('nh_' + item.id, {
@@ -182,7 +203,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: false, error: 'payload.messages 缺失' });
           return;
         }
-        const res = await chat({ ...c, messages: prompt });
+        const opts = msg.payload && msg.payload.options;
+        const maxTokens = opts && Number(opts.maxTokens);
+        const res = await chat({ ...c, messages: prompt, maxTokens: Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : undefined });
         sendResponse(res);
       }).catch((e) => {
         sendResponse({ ok: false, error: '后台异常: ' + e.message });
@@ -218,20 +241,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     case 'pending-done': {
       const id = msg.payload && msg.payload.id;
       const conv = msg.payload && msg.payload.conversationId;
-      chrome.storage.local.get('pendingHuman', (r) => {
-        const arr = Array.isArray(r.pendingHuman) ? r.pendingHuman : [];
+      withPendingHuman((arr) => {
         const it = arr.find((x) => x.id === id);
         if (it) it.done = true;
-        chrome.storage.local.set({ pendingHuman: arr }, () => {
-          updateBadge();
-          if (conv) relayCmdToCsTabs('unmute-conv', { conversationId: conv }); // 你已处理 → 该会话 AI 恢复
-          sendResponse({ ok: true });
-        });
+        return arr;
+      }).then(() => {
+        updateBadge();
+        if (conv) relayCmdToCsTabs('unmute-conv', { conversationId: conv }); // 你已处理 → 该会话 AI 恢复
+        sendResponse({ ok: true });
       });
       return true;
     }
     case 'pending-clear': {
-      chrome.storage.local.set({ pendingHuman: [] }, () => { updateBadge(); sendResponse({ ok: true }); });
+      withPendingHuman(() => []).then(() => { updateBadge(); sendResponse({ ok: true }); });
       return true;
     }
     case 'aics-event': {

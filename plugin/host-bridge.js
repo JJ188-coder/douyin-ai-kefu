@@ -10,7 +10,8 @@
     if (!ev || !ev.data) return;
     const d = ev.data;
     if (d.__aics === 'llm-req') {
-      chrome.runtime.sendMessage({ type: 'llm-chat', payload: { messages: d.payload.messages } }, (res) => {
+      const payload = d.payload || {};
+      chrome.runtime.sendMessage({ type: 'llm-chat', payload: { messages: payload.messages || [], options: payload.options || {} } }, (res) => {
         const ok = !chrome.runtime.lastError;
         window.postMessage(
           // reqId 原样带回：并发请求各认各的回复
@@ -66,6 +67,15 @@
     if (tag && tag.startsWith('bridge-')) {
       // 对话记录额外落盘（本地复盘用）
       if (tag === 'bridge-chatlog') appendChat(ev.data.payload);
+      // 运行态持久化：agent 把人工静音表/每日计数同步过来，避免刷新后丢失（不再转发给 popup 噪音）
+      if (tag === 'bridge-mute-state' && ev.data.payload && typeof ev.data.payload === 'object') {
+        chrome.storage.local.set({ staffMutes: ev.data.payload.mutes || {} }, () => void chrome.runtime.lastError);
+        return;
+      }
+      if (tag === 'bridge-daily-state' && ev.data.payload && typeof ev.data.payload === 'object') {
+        chrome.storage.local.set({ daily: { date: String(ev.data.payload.date || ''), count: Number(ev.data.payload.count) || 0 } }, () => void chrome.runtime.lastError);
+        return;
+      }
       chrome.runtime.sendMessage({ type: 'aics-event', channel: tag.slice(7), payload: ev.data.payload });
     }
   });
@@ -82,7 +92,8 @@
 
   // ---- 启动时把持久化配置下发给 MAIN（MAIN world 无法访问 chrome.storage）----
   // host.js 的 apply-config 是幂等的；MAIN 注入时序不保证，故重试几次确保送达。
-  const CFG_KEYS = ['enabled', 'autoSend', 'provider', 'profile', 'kb', 'quietEnabled', 'quietFrom', 'quietTo', 'dailyLimit', 'minIntervalMs', 'maxRepliesPerConv', 'staffMuteMinutes'];
+  // 持久化项：配置 + 运行态（人工静音表/每日计数）。配置由 popup 写入，运行态由 agent 通过 bridge-* 回写。
+  const CFG_KEYS = ['enabled', 'autoSend', 'provider', 'profile', 'kb', 'quietEnabled', 'quietFrom', 'quietTo', 'dailyLimit', 'minIntervalMs', 'maxRepliesPerConv', 'staffMuteMinutes', 'staffMutes', 'daily'];
   async function pushPersistedConfig() {
     try {
       const c = await chrome.storage.local.get(CFG_KEYS);

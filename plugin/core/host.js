@@ -9,8 +9,9 @@
     window.postMessage({ __aics: 'bridge-' + channel, payload: data }, window.location.origin);
   }
 
-  // 兜底：等待 store 就绪后自动 enable（配置由 popup/host-bridge 注入后再二次应用）
+  // 兜底：等待 store 就绪 + 配置就绪后再 enable（避免启动先按默认配置跑，持久化配置随后才到）
   let started = false;
+  let configApplied = false;
 
   // 回填最近会话消息到对话记录（只读，不触发回复）
   async function backfillChatlog() {
@@ -60,10 +61,13 @@
       setTimeout(boot, 800);
       return;
     }
-    started = true;
-    agent.enable();   // 不带参：避免覆盖 host-bridge 随后下发的持久化配置
-    publish('ready', { storeFound: true });
-    log('store found; agent auto-enabled (waiting config from popup)');
+    if (!started) {
+      started = true;
+      // 新装/无持久化配置的兜底：host-bridge 没有配置可推，这里按默认值启动，避免永远不接管
+      setTimeout(() => { if (!configApplied) agent.enable(); }, 6000);
+      publish('ready', { storeFound: true });
+      log('store found; waiting persisted config before enable');
+    }
 
     // 把 store-bridge 的 emit 事件也转发给 popup
     bridge.on('sent', (d) => publish('sent', d));
@@ -133,13 +137,18 @@
       switch (cmd) {
         case 'apply-config': {
           // payload：{enabled, autoSend, provider, profile, quiet...}
+          configApplied = true;
           agent.applyConfig(payload || {});
           if (agent.getState().enabled) agent.enable(); // 幂等：已有 listener 则不变
           publish('config-applied', { ok: true });
           break;
         }
-        case 'enable': agent.enable({ autoSend: !!payload?.autoSend }); publish('config-applied', { ok: true }); break;
+        case 'enable': configApplied = true; agent.enable({ autoSend: !!payload?.autoSend }); publish('config-applied', { ok: true }); break;
         case 'disable': agent.disable(); publish('config-applied', { ok: true }); break;
+        case 'reset-daily':
+          if (agent.resetDaily) agent.resetDaily();
+          publish('config-applied', { ok: true });
+          break;
         case 'unmute-conv':
           // 店主在待处理列表点了「已处理」→ 解除该会话人工静音，AI 恢复接管
           if (payload && payload.conversationId && agent.unmuteConv) agent.unmuteConv(payload.conversationId);
