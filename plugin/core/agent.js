@@ -40,6 +40,7 @@
     lastBuyerFp: new Map(),   // convId -> {fp, at} 内容指纹去重（SDK 换 clientId 重推的兜底）
     sendLock: new Map(),      // convId -> true 发送锁：同一会话同时只跑一个决策-发送流程
     pendingMsg: new Map(),    // convId -> item 锁期间到达的最新买家消息，锁释放后补处理
+    runEpoch: 0,              // disable() 递增：在途流水线在关键出口检查，禁用后不再发出
     // ---- 人工接管静音：你在会话里发消息，AI 就闭嘴 ----
     staffMuteByConv: new Map(), // convId -> mutedUntil（时间戳）。人工每发一条刷新计时
     staffMuteMinutes: 15,     // 人工接管后 AI 静音时长（分钟）
@@ -95,8 +96,38 @@
       if (c.maxRepliesPerConv !== undefined) state.maxRepliesPerConv = Number(c.maxRepliesPerConv) || DEFAULT_PER_TURN;
       if (c.staffMuteMinutes !== undefined) { const n = Number(c.staffMuteMinutes); state.staffMuteMinutes = Number.isFinite(n) ? n : 15; } // 允许 0 = 不静音
       if (c.kb) state.kb = c.kb;
+      // ---- 运行态恢复：人工静音表/每日计数（host-bridge 从 chrome.storage 推下来）----
+      if (c.staffMutes && typeof c.staffMutes === 'object') {
+        state.staffMuteByConv.clear();
+        const now = Date.now();
+        for (const [k, v] of Object.entries(c.staffMutes)) {
+          const until = Number(v);
+          if (!k) continue;
+          if (until === Infinity || until > now) state.staffMuteByConv.set(k, until);
+        }
+      }
+      if (c.daily && typeof c.daily === 'object') {
+        const today = new Date().toISOString().slice(0, 10);
+        if (c.daily.date === today) state.dailyCount = Number(c.daily.count) || 0;
+      }
     }
     return state;
+  }
+
+  function persistMutes() {
+    try {
+      const { b } = deps();
+      const obj = {};
+      for (const [k, v] of state.staffMuteByConv) obj[k] = v === Infinity ? Infinity : Number(v) || 0;
+      b.emit('mute-state', { mutes: obj });
+    } catch (e) { /* bridge 未就绪时静默 */ }
+  }
+
+  function persistDaily() {
+    try {
+      const { b } = deps();
+      b.emit('daily-state', { date: new Date().toISOString().slice(0, 10), count: state.dailyCount });
+    } catch (e) { /* bridge 未就绪时静默 */ }
   }
 
   function inQuietHours() {
@@ -117,9 +148,10 @@
     let mins = minutes;
     if (mins === undefined || mins === null) mins = state.staffMuteMinutes;
     if (mins === undefined || mins === null) mins = 15;
-    if (!(mins > 0)) { state.staffMuteByConv.delete(conv); return; }   // 0 = 不静音
+    if (!(mins > 0)) { state.staffMuteByConv.delete(conv); persistMutes(); return; }   // 0 = 不静音
     const wasMuted = (state.staffMuteByConv.get(conv) || 0) > Date.now();
     state.staffMuteByConv.set(conv, mins === Infinity ? Infinity : Date.now() + mins * 60000);
+    persistMutes();
     if (!wasMuted) {
       const { b } = deps();
       const label = mins === Infinity ? '直到你来处理' : `${mins} 分钟`;
@@ -129,7 +161,7 @@
   }
   function isMuted(conv) {
     const until = state.staffMuteByConv.get(convKey(conv)) || 0;
-    if (Date.now() >= until) { if (until) state.staffMuteByConv.delete(convKey(conv)); return false; }
+    if (Date.now() >= until) { if (until) { state.staffMuteByConv.delete(convKey(conv)); persistMutes(); } return false; }
     return true;
   }
   // 人工客服发消息（store-bridge onStaff 回调）→ 刷新该会话静音
@@ -185,6 +217,7 @@
     if (!state.enabled) return;
     if (!item) return;
     if (item.isFromMe) return;               // 只响应买家
+    const epoch = state.runEpoch;
 
     // 转人工事件型消息：直接标记接管，即使时序上先于普通消息到达
     if (item.type === 'allocated_service' || item.allocated === true) {
@@ -216,9 +249,9 @@
       log('skip non-buyer role:', item.senderRole, String(item.content || '').slice(0, 20));
       return;
     }
-    if (b.isSent(item.content)) return;      // 防回环
     const conv = item.conversationId;
     if (!conv) return;
+    if (b.isSent(item.content, conv)) return;      // 防回环
     const ckey = convKey(conv);   // 门禁/状态统一按买家维度，避免 SDK 多 convId 前缀绕过防重
 
     const ctx = state.assigned.get(ckey);
@@ -313,6 +346,11 @@
         log('throttle, delay reply', wait, 'ms, conv:', conv);
         await new Promise((r) => setTimeout(r, wait));   // 间隔不够就等够再发，绝不丢回复
       }
+      // 节流/排队后如果买家又发了新消息，当前这条按"已被新消息取代"作废，让队列里的新消息重新决策
+      if (state.pendingMsg.has(ckey)) {
+        log('newer buyer msg arrived during throttle, drop stale reply:', conv);
+        return;
+      }
 
       // 免打扰
       if (inQuietHours()) {
@@ -373,12 +411,17 @@
       }
 
       const needsHuman = !!decision.needsHuman;
+      let sentOk = false;
       if (state.autoSend) {
         await new Promise((r) => setTimeout(r, decision.delay)); // 真人感延迟
         // 发送前最后一道闸：流水线（排队/节流/等大模型）可能走了几十秒，
-        // 期间店主一旦接手（静音被设上），这条回复直接作废，绝不抢话
+        // 期间店主一旦接手（静音被设上）/插件被禁用/买家又发新消息，这条回复直接作废，绝不抢话
         if (isMuted(conv)) {
           log('muted during pipeline, drop reply:', conv);
+          return;
+        }
+        if (epoch !== state.runEpoch) {
+          log('disabled during pipeline, drop reply:', conv);
           return;
         }
         // 发送前会话存活检查：决策期间会话被关闭就不再补枪（买家已看不到）
@@ -387,16 +430,19 @@
           return;
         }
         try {
-          b.rememberSent(decision.reply);                     // 先登记再发送：SDK 同步回推这条消息时才不会被误判成人工发送
-          b.sendText(conv, decision.reply);                     // 不打任何平台可见标记，回复就是普通人工消息
+          b.rememberSent(conv, decision.reply);                     // 先登记再发送：SDK 同步回推这条消息时才不会被误判成人工发送
+          await b.sendText(conv, decision.reply);                     // 不打任何平台可见标记，回复就是普通人工消息
           state.lastReplyAtByConv.set(ckey, Date.now());
           state.dailyCount += 1;
+          persistDaily();
           const remain = consumeTurn(ckey);                 // 用掉一条本轮配额
+          sentOk = true;
           log('[sent]', 'conv=', conv, 'reply=', decision.reply, 'replies_this_consumer_msg=', remain);
           const { b: bb } = deps();
           bb.emit('sent', { conversationId: conv, reply: decision.reply, repliesThisConsumerMsg: remain, maxPerConsumerMsg: state.maxRepliesPerConv ?? DEFAULT_PER_TURN });
         } catch (e) {
           log('send fail', e);
+          if (b.forgetSent) b.forgetSent(conv, decision.reply);   // 发送失败回滚登记，避免后续被误判成"AI 已发"
           const { b: bb } = deps();
           bb.emit('notice', { level: 'error', text: '发送失败: ' + e.message });
         }
@@ -408,11 +454,11 @@
 
       // ---- 答不了 → 叫人：兜底话术发出后再上报店主 + 本会话无限期静音等人工 ----
       // （必须放在发送之后：若放在发送前，发送前静音闸会把自己的兜底回复一并拦掉）
-      if (needsHuman) {
+      if (needsHuman && (!state.autoSend || sentOk)) {
         muteConv(conv, Infinity, 'AI 答不了，已通知你处理');
         const { b: bb0 } = deps();
         bb0.emit('needs-human', { conversationId: conv, buyerText: text, reply: decision.reply });
-      } else if (l.detectFollowup && l.detectFollowup(decision.reply)) {
+      } else if (!needsHuman && l.detectFollowup && l.detectFollowup(decision.reply)) {
         // ---- 转办承诺上报：AI 答了，但承诺了要人办的事（加VX/回电/专员对接/反馈核实）----
         // 回复已发出，这里推飞书+红角标提醒店主真的去落实，否则承诺空转买家干等。
         // 不静音（AI 继续接待）；同一会话 30 分钟内只提醒一次，防连续承诺刷屏。
@@ -453,6 +499,9 @@
   // ---- 转人工事件 → 标记接管 ----
   function markAssigned(item) {
     if (!item || !item.conversationId) return;
+    // 过期/历史 allocated 事件重放不接管也不清状态（重连后 SDK 会重放旧分配事件）
+    if (item.timestamp && state.bootAt && item.timestamp < state.bootAt - 3000) return;
+    if (item.timestamp && Date.now() - item.timestamp > STALE_MS) return;
     const ckey = convKey(item.conversationId);
     state.assigned.set(ckey, { assigned: true });
     state.handoverByConv.set(ckey, { at: Number(item.timestamp) || Date.now(), consolidated: false });   // 新的一局：允许再集中答一次
@@ -472,6 +521,12 @@
     state.lastReplyAtByConv.delete(ckey);
     state.turnByConv.delete(ckey);
     state.seenTurnMsg.delete(ckey);
+    state.lastBuyerFp.delete(ckey);
+    state.lastUserTextByConv.delete(ckey);
+    state.sendLock.delete(ckey);
+    state.pendingMsg.delete(ckey);
+    state.followupNotified.delete(ckey);
+    persistMutes();
     log('conversation closed, reset conv state:', item.conversationId);
   }
 
@@ -493,12 +548,13 @@
   }
 
   function disable() {
+    state.runEpoch += 1;   // 取消在途流水线：正在延迟/等大模型的回复在发送前会看到纪元变了，直接作废
     if (state.unsubscribe) { try { state.unsubscribe(); } catch (e) {} state.unsubscribe = null; }
     state.enabled = false;
     log('disabled');
   }
 
-  function resetDaily() { state.dailyCount = 0; }
+  function resetDaily() { state.dailyCount = 0; persistDaily(); }
 
   const api = {
     enable, disable, handleMessage, markAssigned, markClosed, historyOf,
