@@ -1,0 +1,13 @@
+{
+  "_note": "模板示例：真实 API Key、飞书凭据、店铺知识库不要提交；复制为 docs/handover-config.json 本机使用或直接填到插件 popup。",
+  "provider": "deepseek",
+  "model": "deepseek-chat",
+  "apiKey": "",
+  "temperature": 0.9,
+  "profile": "",
+  "kb": [],
+  "feishuWebhook": "",
+  "feishuAppId": "",
+  "feishuAppSecret": "",
+  "feishuChatId": ""
+}

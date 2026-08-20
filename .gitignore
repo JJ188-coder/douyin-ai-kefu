@@ -8,3 +8,11 @@ reverse/cdp/ChatGPT-On-CS/
 node_modules/
 *.log
 .playwright-mcp/
+
+# 拆分后本机私有配置/运行产物
+.env
+private/
+output/
+screenshots/
+*.sqlite
+docs/handover-config.json
