@@ -37,10 +37,10 @@ fire({ clientId: 's2', content: '很高兴为您服务，请问有什么可以�
 assert.equal(staffEvents.length, 0, '❌ 自动欢迎语不应派发');
 console.log('✅ 3. 自动欢迎语不派发, events =', staffEvents.length);
 
-// 4) AI 自己发的（rememberSent 登记过）→ 不派发
-bridge.rememberSent('AI 的回复内容');
+// 4) AI 自己发的（按会话 rememberSent 登记过）→ 不派发
+bridge.rememberSent('C1', 'AI 的回复内容');
 fire({ clientId: 'a1', content: 'AI 的回复内容', isFromMe: true, senderRole: '2', bizConversationId: 'C1', pigeonMsgType: 'text', createTime: NOW });
-assert.equal(staffEvents.length, 0, '❌ AI 自回不应派发');
+assert.equal(staffEvents.length, 0, '❌ 按会话登记的 AI 自回不应派发');
 console.log('✅ 4. AI 自回不派发, events =', staffEvents.length);
 
 // 5) 真人客服实时打字 → 正常派发（onMessage + onMessageUpsert 双推各一次，下游静音逻辑幂等无害）

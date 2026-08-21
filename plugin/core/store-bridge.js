@@ -199,7 +199,7 @@
           emit('message', item);
           if (typeof onMessage === 'function') onMessage(item);
         } else if (String(msg.content || '').trim()) {
-          if (isSent(msg.content)) {
+          if (isSent(msg.content, msg.bizConversationId)) {
             learnSentClientId(msg.clientId);   // 内容指纹新鲜时学到 clientId，之后这条消息重推永久认得
           } else if (!isSentClientId(msg.clientId)) {
             // 人工客服本人在发消息（排除 AI 自己发的）→ 派发人工活动，agent 据此静音防抢答

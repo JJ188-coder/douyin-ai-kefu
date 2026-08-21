@@ -168,7 +168,7 @@
   function noteStaff(item) {
     if (!item || !item.conversationId) return;
     const { b } = deps();
-    if (item.content && b.isSent(item.content)) return;    // 自己刚发的（SDK 回推），不是人工活动
+    if (item.content && b.isSent(item.content, item.conversationId)) return;    // 自己刚发的（SDK 回推），不是人工活动
     // 历史重推不算人工活动：重载/重连后 SDK 会重放旧消息，此时发送记录已清空，不能误判成人工接管
     if (item.timestamp && state.bootAt && item.timestamp < state.bootAt - 3000) return;
     muteConv(item.conversationId, state.staffMuteMinutes, '检测到你正在人工接待');
