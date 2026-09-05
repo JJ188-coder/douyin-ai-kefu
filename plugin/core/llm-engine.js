@@ -394,7 +394,7 @@
     if (!trimmed) return null;
     // 反幻觉硬闸：发送前最后校验。被拦 = 回复里有知识库/对话支撑不了的承诺或事实，
     // 替换为安全兜底 + needsHuman（该会话静音等人工 + 店主收红角标/飞书提醒）
-    const gate = antiHallucinationGate(trimmed, buildEvidence(history, kb, classify));
+    const gate = antiHallucinationGate(trimmed, buildEvidence(history, kb, classify) + '\n' + lastUser);
     if (!gate.ok) {
       log('ANTI-HALLUCINATION BLOCKED [' + gate.reason + '] orig:', trimmed);
       const lastBuyer = String((message && message.content) || '');

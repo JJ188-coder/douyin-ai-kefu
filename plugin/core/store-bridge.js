@@ -235,24 +235,27 @@
   // 内容指纹不带过期时间（原来 30 分钟过期后，SDK 因已读回执/重连重推 AI 自己的回复，
   // isSent 失配被误判成人工发言 → 误静音会话），改用容量上限控制内存；
   // clientId 指纹：回推到达且内容匹配时学到，之后这条消息无论过多久重推都能认出是自己发的。
-  const sentMemory = new Set();
+  const sentMemory = new Map();
   const sentClientIds = new Set();
-  const capSet = (set, max) => { while (set.size > max) set.delete(set.values().next().value); };
+  const capSet = (set, max) => { while (set.size > max) set.delete(set.keys().next().value); };
   const sentKey = (content, conv) => String(conv || '') + '|' + String(content || '').slice(0, 200);
   // 兼容旧调用：rememberSent(content) / isSent(content) 按全局匹配；新代码用 (conv, content) / (content, conv) 按会话隔离
   function rememberSent(conv, content) {
     if (content === undefined) { content = conv; conv = ''; }
-    sentMemory.add(sentKey(content, conv));
+    const marker = {};
+    sentMemory.set(sentKey(content, conv), marker);
     capSet(sentMemory, 2000);
+    return marker;
   }
   function isSent(content, conv) {
     const key = String(content || '').slice(0, 200);
     return sentMemory.has(sentKey(key, conv)) || sentMemory.has(sentKey(key, ''));
   }
-  function forgetSent(conv, content) {
+  function forgetSent(conv, content, marker) {
     if (content === undefined) { content = conv; conv = ''; }
-    sentMemory.delete(sentKey(content, conv));
-    if (conv) sentMemory.delete(sentKey(content, ''));
+    for (const key of [sentKey(content, conv), sentKey(content, '')]) {
+      if (marker === undefined || sentMemory.get(key) === marker) sentMemory.delete(key);
+    }
   }
   function learnSentClientId(id) {
     if (!id) return;

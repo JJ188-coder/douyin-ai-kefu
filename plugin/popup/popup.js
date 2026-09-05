@@ -71,13 +71,13 @@
       provider: $('provider').value,
       model: $('model').value.trim(),
       apiKey: $('apiKey').value.trim(),
-      temperature: Number($('temperature').value) || 0.9,
+      temperature: Number($('temperature').value || 0.9),
       autoSend: $('autoSend').value === 'true',
       profile: $('profile').value.trim(),
       kb: ($('kb').value || '').split('\n').map((s) => s.trim()).filter(Boolean),
       minIntervalMs: Number($('minInterval').value) || 15000,
       maxRepliesPerConv: Number($('maxPerTurn').value) || 1,
-      staffMuteMinutes: Number($('staffMuteMinutes').value) || 15,
+      staffMuteMinutes: Number($('staffMuteMinutes').value || 15),
       dailyLimit: Number($('dailyLimit').value) || 200,
       quietEnabled: $('quietEnabled').value === 'true',
       quietFrom: Number($('quietFrom').value) || 0,
@@ -168,7 +168,7 @@
     toast('已发送测试消息（走接管管线）');
   });
   $('btnResetDaily').addEventListener('click', async () => {
-    await chrome.storage.local.set({ dailyCount: 0 });
+    await chrome.storage.local.remove('daily');
     dispatch('reset-daily');
     toast('今日计数已重置');
   });

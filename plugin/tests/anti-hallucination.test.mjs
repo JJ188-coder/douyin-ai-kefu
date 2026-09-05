@@ -142,5 +142,10 @@ check(F('建议您加我们VX，就是手机号13395895579，留言我们看到�
 check(F('下午3-5点高峰期电话打不通，您加我们VX更方便') === false, '高峰引导话术不转办');
 check(F('我让同事加您VX，您通过一下') === true, '同事去加买家 = 要人落实，照报');
 
+d = await run('您这边是7位，我记下了。', '我们7个人', [], []);
+check(!d.blockedBy && !d.needsHuman, '当前买家消息未入历史时，已提供的数字仍可作证据', d.blockedBy);
+d = await run('您这边是8位。', '我们7个人', [aiSelf('8位')], []);
+check(!!d.blockedBy, '补入当前消息不放行 AI 自己编造的数字', d.blockedBy);
+
 globalThis.window = realWindow;
 console.log('ALL PASS');

@@ -98,3 +98,32 @@ test('cfg-get / cfg-set 读写 chrome.storage（直接验证存储语义，不�
   const after = await local.get(['model']);
   assert.equal(after.model, 'deepseek-chat');
 });
+
+test('llm-chat: temperature=0 透传且保留 maxTokens', async () => {
+  let captured;
+  const { send } = loadWithMessageHandler({
+    storage: { local: { get: async () => ({ apiKey: 'sk-test', provider: 'deepseek', model: 'deepseek-chat', temperature: 0, apiBase: 'https://api.deepseek.com/v1' }), set: async () => {} } },
+    fetch: async (url, opts) => {
+      captured = { url, body: JSON.parse(opts.body) };
+      return { ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) };
+    },
+  });
+  const res = await send({ type: 'llm-chat', payload: { messages: [{ role: 'user', content: 'x' }], options: { maxTokens: 123 } } });
+  assert.equal(res.ok, true);
+  assert.equal(captured.body.temperature, 0);
+  assert.equal(captured.body.max_tokens, 123);
+});
+
+test('llm-chat: 非法 temperature 仍回退到 0.9', async () => {
+  let captured;
+  const { send } = loadWithMessageHandler({
+    storage: { local: { get: async () => ({ apiKey: 'sk-test', provider: 'deepseek', model: 'deepseek-chat', temperature: 'not-a-number', apiBase: 'https://api.deepseek.com/v1' }), set: async () => {} } },
+    fetch: async (_url, opts) => {
+      captured = JSON.parse(opts.body);
+      return { ok: true, json: async () => ({ choices: [{ message: { content: 'ok' } }] }) };
+    },
+  });
+  const res = await send({ type: 'llm-chat', payload: { messages: [{ role: 'user', content: 'x' }] } });
+  assert.equal(res.ok, true);
+  assert.equal(captured.temperature, 0.9);
+});
