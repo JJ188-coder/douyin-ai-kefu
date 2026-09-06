@@ -29,9 +29,12 @@ async function cfg() {
 
 // ---- LLM chat（OpenAI 兼容）----
 async function chat({ model, apiKey, apiBase, temperature, messages, maxTokens }) {
+  const temperatureValue = typeof temperature === 'number'
+    ? temperature
+    : (typeof temperature === 'string' && temperature.trim() !== '' ? Number(temperature) : NaN);
   const body = {
     model,
-    temperature: Number(temperature) || 0.9,
+    temperature: Number.isFinite(temperatureValue) ? temperatureValue : 0.9,
     messages,
   };
   const maxTok = Number(maxTokens);
@@ -73,24 +76,29 @@ function relayCmdToCsTabs(cmd, payload) {
 
 // ---- 待人工处理：AI 答不了的买家问题，通知店主 ----
 async function updateBadge() {
-  const r = await chrome.storage.local.get('pendingHuman');
-  const n = (Array.isArray(r.pendingHuman) ? r.pendingHuman : []).filter((x) => !x.done).length;
-  await chrome.action.setBadgeBackgroundColor({ color: '#f53f3f' });
-  await chrome.action.setBadgeText({ text: n ? String(n) : '' });
+  try {
+    const r = await chrome.storage.local.get('pendingHuman');
+    const n = (Array.isArray(r.pendingHuman) ? r.pendingHuman : []).filter((x) => !x.done).length;
+    await chrome.action.setBadgeBackgroundColor({ color: '#f53f3f' });
+    await chrome.action.setBadgeText({ text: n ? String(n) : '' });
+  } catch (e) {
+    console.warn('[background] 更新角标失败:', e && e.message ? e.message : String(e));
+  }
 }
 
 // pendingHuman 的 get→改→set 串行化：needs-human 事件可能并发/重发，
 // 不串行会出现读旧数组互相覆盖、待处理重复、角标不准。
 let pendingQueue = Promise.resolve();
 function withPendingHuman(fn) {
-  pendingQueue = pendingQueue.then(async () => {
+  const operation = pendingQueue.then(async () => {
     const r = await chrome.storage.local.get('pendingHuman');
     const arr = Array.isArray(r.pendingHuman) ? r.pendingHuman : [];
     const next = await fn(arr);
     if (next !== arr) await chrome.storage.local.set({ pendingHuman: next });
     return next;
   });
-  return pendingQueue;
+  pendingQueue = operation.catch(() => {});
+  return operation;
 }
 
 // ---- 飞书通知：支持「群自定义机器人 webhook」或「开放平台自建应用 API」两种方式 ----
@@ -174,6 +182,9 @@ async function handleNeedsHuman(p) {
   } catch (e) { /* 通知不可用时静默 */ }
   // 飞书推送
   const time = new Date(item.t).toLocaleString('zh-CN', { hour12: false });
+  const humanNotice = item.reply
+    ? 'AI 已兜底回复：' + item.reply + '\n该会话已静音，待人工处理后解除'
+    : '本次仅预警，请到客服台关注处理';
   feishuSend(isFollowup
     ? '📌 抖音客服·承诺转办\n' +
       '买家：' + item.buyer + '\n' +
@@ -182,9 +193,8 @@ async function handleNeedsHuman(p) {
       'AI 已向买家承诺了要人办的事（加 VX/回电/专员对接/核实等），请按承诺跟进落实；该会话 AI 仍在正常接待。'
     : '🔔 抖音客服·需要人工介入\n' +
       '买家：' + item.buyer + '\n' +
-      'AI 已兜底回复：' + item.reply + '\n' +
-      '时间：' + time + '\n' +
-      '请到客服台处理（该会话已自动静音 15 分钟，你发消息即接管）'
+      humanNotice + '\n' +
+      '时间：' + time
   ).then((res) => { if (!res.ok) console.warn('[background] 飞书推送失败:', res.error); });
 }
 
@@ -233,27 +243,38 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return true;
     }
     case 'pending-list': {
-      chrome.storage.local.get('pendingHuman', (r) => {
-        sendResponse({ list: Array.isArray(r.pendingHuman) ? r.pendingHuman : [] });
-      });
+      withPendingHuman((arr) => arr)
+        .then((list) => sendResponse({ list }))
+        .catch((e) => sendResponse({ ok: false, error: e && e.message ? e.message : String(e) }));
       return true;
     }
     case 'pending-done': {
       const id = msg.payload && msg.payload.id;
-      const conv = msg.payload && msg.payload.conversationId;
+      let item;
       withPendingHuman((arr) => {
-        const it = arr.find((x) => x.id === id);
-        if (it) it.done = true;
-        return arr;
-      }).then(() => {
-        updateBadge();
-        if (conv) relayCmdToCsTabs('unmute-conv', { conversationId: conv }); // 你已处理 → 该会话 AI 恢复
+        const hit = arr.find((x) => x.id === id);
+        if (!hit) return arr;
+        item = hit;
+        if (hit.done) return arr;
+        return arr.map((x) => x.id === id ? { ...x, done: true } : x);
+      }).then(async () => {
+        await updateBadge();
+        if (item && item.kind !== 'followup') {
+          await withPendingHuman((latest) => {
+            if (!latest.some((x) => !x.done && x.conv === item.conv && x.kind !== 'followup')) {
+              relayCmdToCsTabs('unmute-conv', { conversationId: item.conv });
+            }
+            return latest;
+          });
+        }
         sendResponse({ ok: true });
-      });
+      }).catch((e) => sendResponse({ ok: false, error: e && e.message ? e.message : String(e) }));
       return true;
     }
     case 'pending-clear': {
-      withPendingHuman(() => []).then(() => { updateBadge(); sendResponse({ ok: true }); });
+      withPendingHuman(() => [])
+        .then(async () => { await updateBadge(); sendResponse({ ok: true }); })
+        .catch((e) => sendResponse({ ok: false, error: e && e.message ? e.message : String(e) }));
       return true;
     }
     case 'aics-event': {

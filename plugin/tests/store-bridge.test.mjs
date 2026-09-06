@@ -91,4 +91,26 @@ fire({ clientId: 'human-10', content: '人工晚班接手了', isFromMe: true, s
 assert.equal(staffEvents.length, staffBefore10 + 2, '❌ 真人实时发言应正常派发, 实际新增 ' + (staffEvents.length - staffBefore10));
 console.log('✅ 10. 真人发言不受影响, events =', staffEvents.length);
 
+const oldMarker = bridge.rememberSent('C1', '重复回复');
+const newMarker = bridge.rememberSent('C1', '重复回复');
+bridge.rememberSent('C2', '重复回复');
+bridge.forgetSent('C1', '重复回复', oldMarker);
+assert.equal(bridge.isSent('重复回复', 'C1'), true, '旧发送失败不能删除新登记');
+bridge.forgetSent('C1', '重复回复', newMarker);
+assert.equal(bridge.isSent('重复回复', 'C1'), false, '对应发送失败仍正常回滚');
+assert.equal(bridge.isSent('重复回复', 'C2'), true, '回滚不能影响其他会话');
+bridge.rememberSent('旧接口测试');
+bridge.forgetSent('旧接口测试');
+assert.equal(bridge.isSent('旧接口测试'), false, '单参数旧接口保持兼容');
+console.log('✅ 11. 指纹回滚只删除对应发送登记，兼容旧接口');
+
+bridge.clearSent();
+for (let i = 0; i <= 2000; i++) bridge.rememberSent('C-cap', '内容' + i);
+assert.equal(bridge.isSent('内容0', 'C-cap'), false, '超容量仍淘汰最早的内容指纹');
+assert.equal(bridge.isSent('内容2000', 'C-cap'), true, '保留最新内容指纹');
+bridge.clearSent();
+assert.equal(bridge.isSent('内容2000', 'C-cap'), false);
+assert.equal(bridge.isSentClientId('echo-9'), false);
+console.log('✅ 12. 指纹容量和清理行为保持不变');
+
 console.log('ALL PASS');

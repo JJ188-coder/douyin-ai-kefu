@@ -6,17 +6,19 @@ import assert from 'node:assert/strict';
 const src = readFileSync(new URL('../host-bridge.js', import.meta.url), 'utf8');
 
 const store = {};
+const posted = [];
+let runtimeListener;
 globalThis.chrome = {
   storage: { local: {
     get: async (k) => (Array.isArray(k) ? Object.fromEntries(k.map((x) => [x, store[x]])) : { [k]: store[k] }),
     set: async (o) => Object.assign(store, o),
   } },
-  runtime: { sendMessage: () => {}, onMessage: { addListener: () => {} }, lastError: null },
+  runtime: { sendMessage: () => {}, onMessage: { addListener: (fn) => { runtimeListener = fn; } }, lastError: null },
 };
 const listeners = [];
 globalThis.window = {
   addEventListener: (t, fn) => listeners.push(fn),
-  postMessage: (d) => { for (const fn of listeners) fn({ data: d }); },
+  postMessage: (d) => { posted.push(d); for (const fn of listeners) fn({ data: d }); },
   location: { origin: 'https://life.douyin.com' },
 };
 eval(src);
@@ -43,5 +45,14 @@ pushChat({ t: '2026-08-18T11:05:00.000Z', conv: 'c2', who: 'buyer', text: '在�
 await sleep(300);
 assert.equal(store.chatlog.length, 4, '❌ 不同时间的同内容消息不应去重, 实际 ' + store.chatlog.length);
 console.log('✅ 3. 真实重发不误伤, chatlog =', store.chatlog.length);
+
+window.postMessage({ __aics: 'bridge-config-applied', payload: { ok: true, cmd: 'apply-config', configRevision: 0 } });
+const publicConfig = { enabled: false, autoSend: false, provider: 'deepseek', kb: ['合成知识库'] };
+runtimeListener({ type: 'aics-cmd', cmd: 'apply-config', payload: {
+  ...publicConfig, apiKey: 'test-only', feishuWebhook: 'https://example.invalid/hook',
+  feishuAppSecret: 'test-only', feishuAppId: 'test-app', feishuChatId: 'test-chat',
+} });
+assert.deepEqual(posted.at(-1).payload, publicConfig, '运行配置可进入网页，模型/飞书凭据不可进入 MAIN world');
+console.log('✅ 4. popup 配置中继不泄露凭据');
 
 console.log('ALL PASS');

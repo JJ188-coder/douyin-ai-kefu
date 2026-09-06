@@ -12,6 +12,7 @@
   // 兜底：等待 store 就绪 + 配置就绪后再 enable（避免启动先按默认配置跑，持久化配置随后才到）
   let started = false;
   let configApplied = false;
+  let stateForwarded = false;
 
   // 回填最近会话消息到对话记录（只读，不触发回复）
   async function backfillChatlog() {
@@ -57,14 +58,17 @@
     if (started) return;
     const bridge = window.__storeBridge;
     const agent = window.__agent;
-    if (!bridge || !agent || !bridge.getChatStore()) {
+    if (bridge && !stateForwarded) {
+      bridge.on('mute-state', (d) => publish('mute-state', d));
+      bridge.on('daily-state', (d) => publish('daily-state', d));
+      stateForwarded = true;
+    }
+    if (!bridge || !agent || !bridge.getChatStore()?._imSdkStore) {
       setTimeout(boot, 800);
       return;
     }
     if (!started) {
       started = true;
-      // 新装/无持久化配置的兜底：host-bridge 没有配置可推，这里按默认值启动，避免永远不接管
-      setTimeout(() => { if (!configApplied) agent.enable(); }, 6000);
       publish('ready', { storeFound: true });
       log('store found; waiting persisted config before enable');
     }
@@ -125,6 +129,7 @@
 
     // 回填最近会话历史到对话记录（只读消息、只做记录，不触发任何回复）
     setTimeout(backfillChatlog, 2000);
+    if (configApplied && agent.getState().enabled) agent.enable();
   }
 
   window.addEventListener('message', (ev) => {
@@ -139,12 +144,17 @@
           // payload：{enabled, autoSend, provider, profile, quiet...}
           configApplied = true;
           agent.applyConfig(payload || {});
-          if (agent.getState().enabled) agent.enable(); // 幂等：已有 listener 则不变
-          publish('config-applied', { ok: true });
+          if (started && agent.getState().enabled) agent.enable();
+          publish('config-applied', { ok: true, cmd, configRevision: ev.data.configRevision });
           break;
         }
-        case 'enable': configApplied = true; agent.enable({ autoSend: !!payload?.autoSend }); publish('config-applied', { ok: true }); break;
-        case 'disable': agent.disable(); publish('config-applied', { ok: true }); break;
+        case 'enable':
+          configApplied = true;
+          agent.applyConfig({ enabled: true, autoSend: !!payload?.autoSend });
+          if (started) agent.enable();
+          publish('config-applied', { ok: true, cmd });
+          break;
+        case 'disable': configApplied = true; agent.disable(); publish('config-applied', { ok: true, cmd }); break;
         case 'reset-daily':
           if (agent.resetDaily) agent.resetDaily();
           publish('config-applied', { ok: true });
